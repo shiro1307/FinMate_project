@@ -1,7 +1,8 @@
 import { useState, useContext, useEffect } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
-import { Plus, Trash2, Target, TrendingUp } from 'lucide-react';
+import { API_URL } from '../apiConfig';
+import { Plus, Trash2, Target } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function BudgetGoals() {
@@ -22,7 +23,7 @@ export default function BudgetGoals() {
 
   const fetchGoals = async () => {
     try {
-      const res = await axios.get('http://127.0.0.1:8000/goals', {
+      const res = await axios.get(`${API_URL}/goals`, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setGoals(res.data);
@@ -41,7 +42,7 @@ export default function BudgetGoals() {
     }
 
     try {
-      const res = await axios.post('http://127.0.0.1:8000/goals', formData, {
+      const res = await axios.post(`${API_URL}/goals`, formData, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setGoals([...goals, res.data]);
@@ -55,7 +56,7 @@ export default function BudgetGoals() {
 
   const handleDeleteGoal = async (goalId: number) => {
     try {
-      await axios.delete(`http://127.0.0.1:8000/goals/${goalId}`, {
+      await axios.delete(`${API_URL}/goals/${goalId}`, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setGoals(goals.filter(g => g.goal_id !== goalId));
@@ -108,17 +109,17 @@ export default function BudgetGoals() {
                   <select
                     value={formData.goal_type}
                     onChange={(e) => setFormData({ ...formData, goal_type: e.target.value })}
-                    className="w-full px-4 py-2 rounded bg-white/10 border border-white/20 text-white"
+                    className="w-full px-4 py-2 rounded bg-white border border-gray-300 text-black focus:outline-none focus:ring-2 focus:ring-cyan-500"
                   >
-                    <option value="savings">Savings</option>
-                    <option value="debt_repayment">Debt Repayment</option>
-                    <option value="investment">Investment</option>
+                    <option value="savings" className="text-black">Savings</option>
+                    <option value="debt_repayment" className="text-black">Debt Repayment</option>
+                    <option value="investment" className="text-black">Investment</option>
                   </select>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-sm font-semibold mb-2">Target Amount ($)</label>
+                    <label className="block text-sm font-semibold mb-2">Target Amount ({auth?.user?.currency_symbol || '$'})</label>
                     <input
                       type="number"
                       step="0.01"
@@ -190,7 +191,7 @@ export default function BudgetGoals() {
                         <div className="flex justify-between items-center mb-1">
                           <span className="text-sm text-gray-300">Progress</span>
                           <span className="text-sm font-semibold">
-                            ${goal.current_progress.toFixed(2)} / ${goal.target_amount.toFixed(2)}
+                            {auth?.user?.currency_symbol || '$'}{goal.current_progress.toFixed(2)} / {auth?.user?.currency_symbol || '$'}{goal.target_amount.toFixed(2)}
                           </span>
                         </div>
                         <div className="w-full h-2 bg-white/10 rounded-full overflow-hidden">

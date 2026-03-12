@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Env / secrets
+.env
+.env.*
+backend/.env
+
+# Local databases / artifacts
+backend/*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+

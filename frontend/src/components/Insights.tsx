@@ -1,7 +1,8 @@
 import { useContext, useEffect, useState } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
-import { AlertCircle, TrendingUp, Lightbulb, Calendar } from 'lucide-react';
+import { API_URL } from '../apiConfig';
+import { AlertCircle, TrendingUp, Lightbulb, Calendar, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export default function Insights() {
@@ -11,47 +12,107 @@ export default function Insights() {
   const [optimization, setOptimization] = useState('');
   const [trends, setTrends] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   useEffect(() => {
     if (auth?.token) {
+      // Check if we have cached data (less than 5 minutes old)
+      const cachedData = localStorage.getItem('insights_cache');
+      const cacheTimestamp = localStorage.getItem('insights_cache_time');
+      
+      if (cachedData && cacheTimestamp) {
+        const cacheAge = Date.now() - parseInt(cacheTimestamp);
+        const fiveMinutes = 5 * 60 * 1000;
+        
+        if (cacheAge < fiveMinutes) {
+          // Use cached data
+          const parsed = JSON.parse(cachedData);
+          setAnomalies(parsed.anomalies);
+          setWeeklyDigest(parsed.weeklyDigest);
+          setOptimization(parsed.optimization);
+          setTrends(parsed.trends);
+          setLastFetched(new Date(parseInt(cacheTimestamp)));
+          setLoading(false);
+          return;
+        }
+      }
+      
+      // Fetch fresh data
       fetchInsights();
     }
   }, [auth?.token]);
 
   const fetchInsights = async () => {
+    setIsRefreshing(true);
     try {
       const [anomRes, digestRes, optRes, trendsRes] = await Promise.all([
-        axios.get('http://127.0.0.1:8000/insights/anomalies', {
+        axios.get(`${API_URL}/insights/anomalies`, {
           headers: { Authorization: `Bearer ${auth?.token}` }
         }),
-        axios.get('http://127.0.0.1:8000/insights/weekly-digest', {
+        axios.get(`${API_URL}/insights/weekly-digest`, {
           headers: { Authorization: `Bearer ${auth?.token}` }
         }),
-        axios.get('http://127.0.0.1:8000/insights/budget-optimization', {
+        axios.get(`${API_URL}/insights/budget-optimization`, {
           headers: { Authorization: `Bearer ${auth?.token}` }
         }),
-        axios.get('http://127.0.0.1:8000/analytics/trends', {
+        axios.get(`${API_URL}/analytics/trends`, {
           headers: { Authorization: `Bearer ${auth?.token}` }
         })
       ]);
 
-      setAnomalies(anomRes.data);
-      setWeeklyDigest(digestRes.data);
-      setOptimization(optRes.data.suggestions);
-      setTrends(trendsRes.data.trends);
+      const data = {
+        anomalies: anomRes.data,
+        weeklyDigest: digestRes.data,
+        optimization: optRes.data.suggestions,
+        trends: trendsRes.data.trends
+      };
+
+      setAnomalies(data.anomalies);
+      setWeeklyDigest(data.weeklyDigest);
+      setOptimization(data.optimization);
+      setTrends(data.trends);
+      
+      // Cache the data
+      localStorage.setItem('insights_cache', JSON.stringify(data));
+      localStorage.setItem('insights_cache_time', Date.now().toString());
+      setLastFetched(new Date());
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
+  };
+
+  const handleRefresh = () => {
+    fetchInsights();
   };
 
   if (loading) {
     return <div className="glass-card p-6 text-center">Loading insights...</div>;
   }
 
+  const cacheAge = lastFetched ? Math.floor((Date.now() - lastFetched.getTime()) / 1000 / 60) : null;
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-6">
+      {/* Refresh Button */}
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-gray-400">
+          {lastFetched && (
+            <span>Last updated {cacheAge === 0 ? 'just now' : `${cacheAge} min ago`}</span>
+          )}
+        </div>
+        <button
+          onClick={handleRefresh}
+          disabled={isRefreshing}
+          className="flex items-center gap-2 px-4 py-2 bg-cyan-500/20 text-cyan-400 rounded-lg hover:bg-cyan-500/30 transition disabled:opacity-50"
+        >
+          <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          {isRefreshing ? 'Refreshing...' : 'Refresh Insights'}
+        </button>
+      </div>
       {/* Weekly Digest */}
       {weeklyDigest && (
         <motion.div

@@ -14,6 +14,20 @@ interface BarChartRaceProps {
 }
 
 export default function BarChartRace({ data, weeks = 12, animationDuration = 1000 }: BarChartRaceProps) {
+  // Show empty state if no data
+  if (!data || data.length === 0 || data[0]?.length === 0) {
+    return (
+      <div className="glass-card p-6 rounded-lg border border-white/10">
+        <h3 className="text-xl font-bold text-white mb-6">Spending by Category</h3>
+        <div className="text-center py-12">
+          <div className="text-5xl mb-4">📊</div>
+          <p className="text-gray-400">No category data available</p>
+          <p className="text-sm text-gray-500 mt-2">Add transactions to see category breakdown</p>
+        </div>
+      </div>
+    );
+  }
+
   const [currentWeek, setCurrentWeek] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
 

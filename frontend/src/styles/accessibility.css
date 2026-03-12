@@ -1,39 +1,38 @@
 /* Accessibility Enhancements */
 
-/* Focus Indicators */
-:focus-visible {
-  outline: 2px solid var(--color-premium-primary);
-  outline-offset: 2px;
+/* Completely remove all focus outlines and indicators */
+*,
+*:focus,
+*:focus-visible,
+*:active,
+button,
+a,
+input,
+select,
+textarea,
+div,
+[tabindex] {
+  outline: none !important;
+  box-shadow: none !important;
 }
 
-button:focus-visible,
-a:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--color-premium-primary);
-  outline-offset: 2px;
-}
-
-/* Remove default browser outline for better UX */
+/* Ensure no focus styles anywhere */
 button:focus,
+button:focus-visible,
+button:active,
 a:focus,
+a:focus-visible,
+a:active,
 input:focus,
+input:focus-visible,
+input:active,
 select:focus,
-textarea:focus {
-  outline: none;
-}
-
-/* Custom focus ring for accessibility */
-button:focus-visible::after,
-a:focus-visible::after,
-input:focus-visible::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  border: 2px solid var(--color-premium-primary);
-  border-radius: inherit;
-  pointer-events: none;
+select:focus-visible,
+textarea:focus,
+textarea:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: inherit !important;
 }
 
 /* Skip Links */

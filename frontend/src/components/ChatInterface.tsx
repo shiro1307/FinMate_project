@@ -1,7 +1,8 @@
 import { useState, useContext, useEffect, useRef } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
-import { Send, Mic, MicOff, Flame, Mail } from 'lucide-react';
+import { API_URL } from '../apiConfig';
+import { Send, Mic, MicOff, Flame, Mail, Sparkles, Target, AlertTriangle, Activity } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 // Web Speech API Types
@@ -18,6 +19,53 @@ interface Message {
   text: string;
   action_type?: string;
   action_payload?: any;
+}
+
+const quickActions = [
+  {
+    id: 'month-summary',
+    label: 'Month summary',
+    icon: Activity,
+    prompt: 'Give me a 3-bullet summary of my last 30 days of spending.',
+  },
+  {
+    id: 'save-5000',
+    label: 'Save ₹5,000/mo',
+    icon: Target,
+    prompt: 'Help me save about ₹5,000 per month. Suggest 2–3 specific cuts based on my data.',
+  },
+  {
+    id: 'subscriptions',
+    label: 'Subscriptions check',
+    icon: AlertTriangle,
+    prompt: 'Check my spending and tell me which subscriptions or recurring charges I should review first.',
+  },
+  {
+    id: 'prediction-link',
+    label: 'Next 3 months',
+    icon: Sparkles,
+    prompt: 'Based on my recent activity, explain how my spending might look over the next 3 months, and which 1–2 categories I should reduce.',
+  },
+];
+
+function renderMarkdown(text: string, keyPrefix: string) {
+  // Very small markdown subset: **bold** support
+  const segments = text.split(/(\*\*[^*]+\*\*)/g);
+  return segments.map((seg, idx) => {
+    const match = seg.match(/^\*\*(.+)\*\*$/);
+    if (match) {
+      return (
+        <strong key={`${keyPrefix}-b-${idx}`} className="font-semibold">
+          {match[1]}
+        </strong>
+      );
+    }
+    return (
+      <span key={`${keyPrefix}-t-${idx}`}>
+        {seg}
+      </span>
+    );
+  });
 }
 
 export default function ChatInterface() {
@@ -82,17 +130,15 @@ export default function ChatInterface() {
     }
   };
 
-  const handleSend = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!input.trim()) return;
+  const sendMessage = async (text: string) => {
+    if (!text.trim()) return;
 
-    const userMessage: Message = { id: `user-${Date.now()}-${Math.random()}`, sender: 'user', text: input };
+    const userMessage: Message = { id: `user-${Date.now()}-${Math.random()}`, sender: 'user', text };
     setMessages((prev) => [...prev, userMessage]);
-    setInput('');
     setLoading(true);
 
     try {
-      const res = await axios.post('http://127.0.0.1:8000/chat', 
+      const res = await axios.post(`${API_URL}/chat`, 
       {
         message: userMessage.text,
         roast_mode: roastMode
@@ -122,31 +168,56 @@ export default function ChatInterface() {
     }
   };
 
+  const handleSend = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const text = input;
+    setInput('');
+    await sendMessage(text);
+  };
+
+  const handleQuickAction = async (prompt: string) => {
+    setInput('');
+    await sendMessage(prompt);
+  };
+
   return (
-    <div className="flex flex-col h-[500px] glass-card overflow-hidden">
+    <div className="flex h-[520px] flex-col rounded-2xl border border-white/10 bg-[#020617]">
       {/* Header */}
-      <div className="p-4 border-b border-white/10 flex items-center justify-between bg-white/[0.02]">
+      <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
         <div className="flex items-center gap-2">
-          <div className={`w-2 h-2 rounded-full ${loading ? 'bg-yellow-400 animate-pulse' : 'bg-green-400'}`}></div>
-          <h3 className="font-semibold tracking-wide">FinMate Intelligence</h3>
+          <div className={`h-2 w-2 rounded-full ${loading ? 'bg-yellow-400 animate-pulse' : 'bg-emerald-400'}`} />
+          <h3 className="text-sm font-semibold tracking-wide text-gray-100">FinMate Coach</h3>
         </div>
-        
-        {/* Roast Mode Toggle */}
         <button 
           onClick={() => setRoastMode(!roastMode)}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-300 border ${
-            roastMode 
-              ? 'bg-[--color-accent-red-glow] border-[--color-accent-red] text-[--color-accent-red] glow-red' 
-              : 'bg-white/5 border-white/10 text-[--color-text-secondary] hover:text-white'
+          className={`flex items-center gap-1.5 rounded-full border px-3 py-1 text-[11px] font-medium transition-colors ${
+            roastMode
+              ? 'border-red-400 bg-red-500/10 text-red-200'
+              : 'border-slate-600 bg-slate-800 text-slate-300 hover:border-slate-400'
           }`}
         >
-          <Flame className="w-3.5 h-3.5" />
-          {roastMode ? 'Roast Mode ON' : 'Roast Mode'}
+          <Flame className="h-3 w-3" />
+          {roastMode ? 'Roast mode' : 'Calm mode'}
         </button>
       </div>
 
+      {/* Quick actions */}
+      <div className="flex flex-wrap gap-2 border-b border-white/5 px-4 py-3">
+        {quickActions.map(({ id, label, icon: Icon, prompt }) => (
+          <button
+            key={id}
+            type="button"
+            onClick={() => handleQuickAction(prompt)}
+            className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/60 px-3 py-1 text-[11px] text-slate-200 hover:border-slate-400 hover:bg-slate-800 transition-colors"
+          >
+            <Icon className="h-3 w-3" />
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Messages Area */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-4">
         <AnimatePresence>
           {messages.map((msg) => (
             <motion.div
@@ -156,16 +227,20 @@ export default function ChatInterface() {
               className={`flex flex-col max-w-[85%] ${msg.sender === 'user' ? 'ml-auto items-end' : 'mr-auto items-start'}`}
             >
               <div 
-                className={`p-3.5 rounded-2xl ${
+                className={`p-3 rounded-2xl text-sm ${
                   msg.sender === 'user' 
-                    ? 'bg-gradient-to-br from-[--color-accent-blue] to-[#3b71bf] text-white rounded-br-sm' 
+                    ? 'rounded-br-sm bg-sky-600 text-white'
                     : roastMode 
-                      ? 'bg-[--color-accent-red-glow] border border-[--color-accent-red]/30 text-white rounded-bl-sm'
-                      : 'bg-white/10 backdrop-blur-md border border-white/5 text-white rounded-bl-sm'
+                      ? 'rounded-bl-sm border border-red-400/40 bg-red-900/40 text-red-50'
+                      : 'rounded-bl-sm border border-slate-600 bg-slate-900 text-slate-50'
                 }`}
               >
-                {/* Parse line breaks safely */}
-                {msg.text.split('\n').map((line, i) => <p key={i} className="mb-1 last:mb-0">{line}</p>)}
+                {/* Parse basic markdown + line breaks safely */}
+                {msg.text.split('\n').map((line, i) => (
+                  <p key={`${msg.id}-line-${i}`} className="mb-1 last:mb-0">
+                    {renderMarkdown(line, `${msg.id}-line-${i}`)}
+                  </p>
+                ))}
               </div>
 
               {/* Action UI Component if LLM triggered an Action */}
@@ -186,15 +261,63 @@ export default function ChatInterface() {
                   </button>
                 </div>
               )}
+
+              {msg.action_type === 'create_budget_goal' && msg.action_payload && (
+                <div className="mt-2 w-full max-w-sm bg-white/5 border border-white/10 rounded-xl p-4">
+                  <p className="text-xs text-gray-400">Goal created</p>
+                  <p className="text-sm font-semibold mt-1 capitalize">{msg.action_payload.goal_type}</p>
+                  <p className="text-sm text-gray-300 mt-1">
+                    Target: {auth?.user?.currency_symbol || '$'}
+                    {Number(msg.action_payload.target_amount || 0).toFixed(0)} by {msg.action_payload.deadline}
+                  </p>
+                </div>
+              )}
+
+              {msg.action_type === 'show_transactions' && msg.action_payload && (
+                <div className="mt-2 w-full max-w-lg bg-white/5 border border-white/10 rounded-xl p-4">
+                  <p className="text-xs text-gray-400">
+                    Matching: <span className="text-gray-200">{msg.action_payload.merchant_query}</span>
+                  </p>
+                  <div className="mt-3 space-y-2">
+                    {(msg.action_payload.transactions || []).length === 0 ? (
+                      <p className="text-sm text-gray-400">No matching transactions found.</p>
+                    ) : (
+                      (msg.action_payload.transactions || []).map((t: any) => (
+                        <div key={t.transaction_id} className="flex items-start justify-between gap-3 bg-black/20 border border-white/5 rounded-lg p-2">
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium truncate">{t.description}</p>
+                            <p className="text-xs text-gray-400">{t.date} · {String(t.category || '').toLowerCase()}</p>
+                          </div>
+                          <p className="text-sm font-semibold shrink-0">
+                            {auth?.user?.currency_symbol || '$'}
+                            {Number(t.amount || 0).toFixed(2)}
+                          </p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {msg.action_type === 'recategorize_transactions' && msg.action_payload && (
+                <div className="mt-2 w-full max-w-sm bg-white/5 border border-white/10 rounded-xl p-4">
+                  <p className="text-xs text-gray-400">Re-categorization</p>
+                  <p className="text-sm text-gray-300 mt-1">
+                    Updated <span className="font-semibold text-white">{msg.action_payload.updated}</span> transactions to{' '}
+                    <span className="font-semibold text-white">{msg.action_payload.category}</span>.
+                  </p>
+                </div>
+              )}
             </motion.div>
           ))}
           {loading && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex items-center gap-2 mr-auto text-[--color-text-muted] text-sm p-2">
-              <div className="flex gap-1">
-                <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                <span className="w-1.5 h-1.5 bg-current rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-              </div>
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mr-auto flex items-center gap-2 rounded-full bg-slate-900 px-3 py-1 text-xs text-slate-400">
+              <span className="flex gap-1">
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" style={{ animationDelay: '0ms' }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" style={{ animationDelay: '150ms' }} />
+                <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-current" style={{ animationDelay: '300ms' }} />
+              </span>
+              Thinking…
             </motion.div>
           )}
           <div ref={messagesEndRef} />
@@ -202,13 +325,13 @@ export default function ChatInterface() {
       </div>
 
       {/* Input Area */}
-      <div className="p-3 bg-white/[0.03] border-t border-white/10">
+      <div className="border-t border-white/10 bg-[#020617] p-3">
         <form onSubmit={handleSend} className="relative flex items-center">
           <button 
             type="button"
             onClick={toggleListen}
             className={`absolute left-3 p-1.5 rounded-full transition-colors ${
-              isListening ? 'bg-[--color-accent-red] text-white animate-pulse' : 'text-[--color-text-secondary] hover:text-white hover:bg-white/10'
+              isListening ? 'animate-pulse bg-rose-600 text-white' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
             }`}
           >
             {isListening ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
@@ -219,13 +342,13 @@ export default function ChatInterface() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder={isListening ? "Listening..." : "Ask FinMate anything..."}
-            className="w-full bg-[#0a0f1a] border border-white/10 focus:border-[--color-accent-blue] rounded-xl pl-12 pr-12 py-3 text-sm outline-none transition-colors"
+            className="w-full rounded-xl border border-slate-700 bg-slate-950 px-12 py-3 text-sm text-slate-100 outline-none transition-colors placeholder:text-slate-500 focus:border-sky-500"
           />
           
           <button 
             type="submit"
             disabled={!input.trim() || loading}
-            className="absolute right-2 p-2 bg-gradient-to-r from-[--color-accent-green] to-[--color-accent-blue] text-white rounded-lg disabled:opacity-50 disabled:cursor-not-allowed hover:opacity-90 transition-opacity"
+            className="absolute right-2 rounded-lg bg-sky-600 p-2 text-white transition-opacity hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Send className="w-4 h-4" />
           </button>

@@ -1,6 +1,5 @@
 import { motion } from 'framer-motion';
 import { Trophy, Plus, Share2, Users } from 'lucide-react';
-import { useState } from 'react';
 
 interface Challenge {
   id: number;

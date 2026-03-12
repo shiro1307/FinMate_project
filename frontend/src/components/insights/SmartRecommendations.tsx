@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion';
-import { Lightbulb, X, Check } from 'lucide-react';
+import { Lightbulb, Check } from 'lucide-react';
 
 interface Recommendation {
   id: string;

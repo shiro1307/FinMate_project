@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Form
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -18,6 +18,33 @@ import utils
 from email_service import email_service
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
+from collections import defaultdict
+
+def _month_window(month_offset: int = 0):
+    """
+    Returns (start_datetime, end_datetime) for the month offset from current month.
+    month_offset=0 => current month, -1 => last month.
+    """
+    now = datetime.utcnow()
+    first_this_month = datetime(now.year, now.month, 1)
+    # move to target month
+    y = first_this_month.year
+    m = first_this_month.month + month_offset
+    while m <= 0:
+        y -= 1
+        m += 12
+    while m >= 13:
+        y += 1
+        m -= 12
+    start = datetime(y, m, 1)
+    # next month
+    nm = m + 1
+    ny = y
+    if nm == 13:
+        nm = 1
+        ny += 1
+    end = datetime(ny, nm, 1)
+    return start, end
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -34,10 +61,24 @@ from utils import limiter, rate_limit_exceeded_handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 
-# Add CORS routing limits
+# Add CORS routing limits (env-driven for deploy safety)
+frontend_urls_env = os.getenv("FRONTEND_URL", "").strip()
+frontend_urls = [u.strip() for u in frontend_urls_env.split(",") if u.strip()]
+if not frontend_urls:
+    frontend_urls = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174", "http://localhost:5175", "http://127.0.0.1:5175"],
+    allow_origins=frontend_urls,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -78,11 +119,28 @@ def signup(user: schemas.UserCreate, db: Session = Depends(get_db)):
     if db_user:
         raise HTTPException(status_code=400, detail="Email already registered")
     
+    # Detect currency from email domain or default to USD
+    currency = "USD"
+    currency_symbol = "$"
+    
+    # Simple currency detection based on email domain
+    if user.email.endswith(('.in', '.co.in')):
+        currency = "INR"
+        currency_symbol = "₹"
+    elif user.email.endswith(('.uk', '.co.uk')):
+        currency = "GBP"
+        currency_symbol = "£"
+    elif user.email.endswith(('.eu', '.de', '.fr', '.it', '.es')):
+        currency = "EUR"
+        currency_symbol = "€"
+    
     hashed_password = auth.get_password_hash(user.password)
     new_user = models.User(
         email=user.email,
         password_hash=hashed_password,
-        full_name=user.full_name
+        full_name=user.full_name,
+        currency=currency,
+        currency_symbol=currency_symbol
     )
     db.add(new_user)
     db.commit()
@@ -165,42 +223,575 @@ def create_transaction(
     
     return new_transaction
 
-@app.post("/upload-csv")
-async def upload_transactions_csv(
-    file: UploadFile = File(...),
+@app.get("/transactions")
+def get_all_transactions(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(auth.get_current_user)
 ):
+    transactions = db.query(models.Transaction).filter(
+        models.Transaction.user_id == current_user.user_id
+    ).order_by(models.Transaction.date.desc()).all()
+    return [schemas.TransactionOut.model_validate(t).model_dump() for t in transactions]
+
+@app.put("/transactions/{transaction_id}")
+def update_transaction(
+    transaction_id: int,
+    transaction: schemas.TransactionCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    txn = db.query(models.Transaction).filter(
+        models.Transaction.transaction_id == transaction_id,
+        models.Transaction.user_id == current_user.user_id
+    ).first()
+    
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    txn.amount = transaction.amount
+    txn.description = transaction.description
+    txn.category = transaction.category.lower()
+    if transaction.date:
+        txn.date = transaction.date
+    
+    db.commit()
+    db.refresh(txn)
+    return schemas.TransactionOut.model_validate(txn).model_dump()
+
+@app.delete("/transactions/{transaction_id}")
+def delete_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    txn = db.query(models.Transaction).filter(
+        models.Transaction.transaction_id == transaction_id,
+        models.Transaction.user_id == current_user.user_id
+    ).first()
+    
+    if not txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+    
+    db.delete(txn)
+    db.commit()
+    return {"status": "success", "message": "Transaction deleted"}
+
+def _detect_source_currency_from_headers_and_sample(df: pd.DataFrame) -> str | None:
+    """
+    Best-effort currency detection based on headers and sample values.
+    This is used for preview and as a default when the frontend doesn't
+    explicitly tell us the CSV's native currency.
+    """
+    headers = " ".join([str(c).lower() for c in df.columns])
+    text_blob = headers
+    sample_rows = df.head(10).to_dict(orient="records")
+    for row in sample_rows:
+        for v in row.values():
+            if isinstance(v, str):
+                text_blob += " " + v
+    text_blob = text_blob.lower()
+
+    if any(tok in text_blob for tok in ["₹", " inr", "rs ", " rs.", " rs-"]):
+        return "INR"
+    if any(tok in text_blob for tok in ["£", " gbp"]):
+        return "GBP"
+    if any(tok in text_blob for tok in ["€", " eur"]):
+        return "EUR"
+    if any(tok in text_blob for tok in ["usd", "$"]):
+        return "USD"
+    return None
+
+
+@app.post("/upload-csv/preview")
+async def preview_transactions_csv(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Lightweight preview endpoint used by the frontend before import.
+
+    - Detects likely date / description / amount / debit / credit columns
+    - Guesses a source currency
+    - Returns a few normalized sample rows
+    """
+    if not file.filename.endswith(".csv"):
+        raise HTTPException(status_code=400, detail="Only CSV files are allowed.")
+
+    content = await file.read()
+    # Decode robustly (reuse the same logic as the main import)
+    csv_content = None
+    for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+        try:
+            csv_content = content.decode(enc)
+            break
+        except Exception:
+            continue
+    if csv_content is None:
+        raise HTTPException(status_code=400, detail="Could not decode CSV file.")
+
+    sample = csv_content[:5000]
+    delim = ","
+    if sample.count(";") > sample.count(",") and sample.count(";") >= 3:
+        delim = ";"
+    elif sample.count("\t") > sample.count(",") and sample.count("\t") >= 3:
+        delim = "\t"
+
+    df = pd.read_csv(
+        io.StringIO(csv_content),
+        sep=delim,
+        dtype=str,
+        keep_default_na=False,
+        engine="python",
+    )
+
+    colmap = {utils.normalize_header(c): c for c in df.columns}
+
+    date_col = utils.pick_first(
+        colmap,
+        [
+            "date",
+            "transaction date",
+            "posted date",
+            "value date",
+            "txn date",
+            "trans date",
+            "booking date",
+            "time",
+            "date & time",
+        ],
+    )
+    desc_col = utils.pick_first(
+        colmap,
+        [
+            "description",
+            "narration",
+            "details",
+            "transaction details",
+            "particulars",
+            "merchant",
+            "name",
+            "remarks",
+            "reference",
+            "payee",
+            "transaction description",
+        ],
+    )
+    amount_col = utils.pick_first(
+        colmap,
+        [
+            "amount",
+            "amt",
+            "value",
+            "transaction amount",
+            "amount inr",
+            "amount_inr",
+            "inr amount",
+            "amount (inr)",
+        ],
+    )
+    debit_col = utils.pick_first(
+        colmap,
+        [
+            "debit",
+            "withdrawal",
+            "withdrawals",
+            "dr",
+            "debit amount",
+            "amount (dr)",
+        ],
+    )
+    credit_col = utils.pick_first(
+        colmap,
+        [
+            "credit",
+            "deposit",
+            "deposits",
+            "cr",
+            "credit amount",
+            "amount (cr)",
+        ],
+    )
+    currency_col = utils.pick_first(colmap, ["currency", "ccy"])
+
+    detected_currency = _detect_source_currency_from_headers_and_sample(df)
+
+    # Build a tiny normalized sample preview (no DB writes)
+    samples = []
+    for _, row in df.head(5).iterrows():
+        raw_date = row.get(date_col) if date_col else None
+        raw_desc = row.get(desc_col) if desc_col else None
+        raw_amount = row.get(amount_col) if amount_col else None
+        if raw_amount is None and (debit_col or credit_col):
+            # Best effort: prefer debit, else credit
+            d = row.get(debit_col) if debit_col else None
+            c = row.get(credit_col) if credit_col else None
+            raw_amount = d or c
+        samples.append(
+            {
+                "date": raw_date,
+                "description": raw_desc,
+                "amount_raw": raw_amount,
+            }
+        )
+
+    return {
+        "status": "success",
+        "columns": list(df.columns),
+        "detected": {
+            "date_column": date_col,
+            "description_column": desc_col,
+            "amount_column": amount_col,
+            "debit_column": debit_col,
+            "credit_column": credit_col,
+            "currency_column": currency_col,
+            "source_currency": detected_currency or current_user.currency,
+        },
+        "sample_rows": samples,
+    }
+
+
+@app.post("/upload-csv")
+async def upload_transactions_csv(
+    file: UploadFile = File(...),
+    source_currency: str | None = Form(None),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Main CSV import endpoint.
+
+    - Uses robust column detection for date/description/amount/debit/credit
+    - Optionally uses a source_currency provided by the frontend (confirmed by user)
+    - Falls back to deterministic parsing when AI is unavailable or the file is large
+    """
     if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="Only CSV files are allowed.")
     
     content = await file.read()
     try:
-        # Assuming CSV has columns: Date, Description, Amount
-        df = pd.read_csv(io.StringIO(content.decode("utf-8")))
+        # Decode robustly (bank exports are often UTF-8-SIG or Windows-1252)
+        csv_content = None
+        for enc in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+            try:
+                csv_content = content.decode(enc)
+                break
+            except Exception:
+                continue
+        if csv_content is None:
+            raise HTTPException(status_code=400, detail="Could not decode CSV file.")
+
+        # Sniff delimiter (comma vs semicolon vs tab)
+        sample = csv_content[:5000]
+        delim = ","
+        if sample.count(";") > sample.count(",") and sample.count(";") >= 3:
+            delim = ";"
+        elif sample.count("\t") > sample.count(",") and sample.count("\t") >= 3:
+            delim = "\t"
+
+        df = pd.read_csv(
+            io.StringIO(csv_content),
+            sep=delim,
+            dtype=str,
+            keep_default_na=False,
+            engine="python",
+        )
         
-        # Super basic processing logic for standard bank CSVs
-        # (This will be expanded greatly, just a skeleton for now)
+        def fallback_import(df_in: pd.DataFrame, override_currency: str | None = None):
+            """
+            Non-AI fallback for demo reliability: best-effort column mapping + parsing.
+            Expected columns: date, description, amount, category (any casing).
+            """
+            colmap = {utils.normalize_header(c): c for c in df_in.columns}
+
+            date_col = utils.pick_first(colmap, [
+                "date", "transaction date", "posted date", "value date", "txn date", "trans date",
+                "booking date", "time", "date & time"
+            ])
+            desc_col = utils.pick_first(colmap, [
+                "description", "narration", "details", "transaction details", "particulars",
+                "merchant", "name", "remarks", "reference", "payee", "transaction description"
+            ])
+
+            # Amount patterns vary a lot: amount, debit/credit, withdrawal/deposit, dr/cr, etc.
+            amount_col = utils.pick_first(colmap, [
+                "amount", "amt", "value", "transaction amount",
+                "amount inr", "amount_inr", "inr amount", "amount (inr)"
+            ])
+            debit_col = utils.pick_first(colmap, ["debit", "withdrawal", "withdrawals", "dr", "debit amount", "amount (dr)"])
+            credit_col = utils.pick_first(colmap, ["credit", "deposit", "deposits", "cr", "credit amount", "amount (cr)"])
+            category_col = utils.pick_first(colmap, ["category"])
+            type_col = utils.pick_first(colmap, ["type", "txn type", "transaction type", "dr/cr", "debit/credit"])
+            currency_col = utils.pick_first(colmap, ["currency", "ccy"])
+
+            transactions_added_local = 0
+            detected_src_currency = override_currency or _detect_source_currency_from_headers_and_sample(df_in)
+
+            conversion_rates = {
+                ('INR', 'USD'): 0.012,
+                ('USD', 'INR'): 83.0,
+                ('EUR', 'USD'): 1.1,
+                ('USD', 'EUR'): 0.91,
+                ('GBP', 'USD'): 1.27,
+                ('USD', 'GBP'): 0.79
+            }
+
+            for _, row in df_in.iterrows():
+                try:
+                    raw_date = row.get(date_col) if date_col else None
+                    try:
+                        date_val = pd.to_datetime(raw_date, errors="coerce").date() if raw_date else None
+                    except Exception:
+                        date_val = None
+                    if not date_val:
+                        date_val = datetime.now().date()
+
+                    raw_desc = row.get(desc_col) if desc_col else None
+                    description = str(raw_desc) if raw_desc not in (None, "", "nan") else "Unknown"
+
+                    amount_signed = None
+                    if amount_col:
+                        amount_signed = utils.parse_money(row.get(amount_col))
+
+                    if amount_signed is None and (debit_col or credit_col):
+                        d = utils.parse_money(row.get(debit_col)) if debit_col else None
+                        c = utils.parse_money(row.get(credit_col)) if credit_col else None
+                        if d is not None and abs(d) > 0:
+                            amount_signed = -abs(d)
+                        elif c is not None and abs(c) > 0:
+                            amount_signed = abs(c)
+
+                    if amount_signed is None and type_col and amount_col:
+                        t = str(row.get(type_col) or "").strip().lower()
+                        base = utils.parse_money(row.get(amount_col))
+                        if base is not None:
+                            if t in {"dr", "debit", "d"}:
+                                amount_signed = -abs(base)
+                            elif t in {"cr", "credit", "c"}:
+                                amount_signed = abs(base)
+                            else:
+                                amount_signed = base
+
+                    if amount_signed is None:
+                        continue
+
+                    # Store expenses as positive amounts (FinMate model assumes spending)
+                    amount = abs(float(amount_signed))
+                    if amount <= 0:
+                        continue
+
+                    category = str(row.get(category_col)).lower() if category_col and row.get(category_col) not in (None, "", "nan") else utils.suggest_category(description)
+                    row_currency = str(row.get(currency_col)).upper() if currency_col and row.get(currency_col) not in (None, "", "nan") else None
+                    src_currency = (override_currency or row_currency or detected_src_currency or current_user.currency).upper()
+
+                    if src_currency != current_user.currency:
+                        rate = conversion_rates.get((src_currency, current_user.currency), 1.0)
+                        amount = amount * rate
+
+                    txn = models.Transaction(
+                        user_id=current_user.user_id,
+                        amount=amount,
+                        description=description,
+                        category=category,
+                        date=date_val,
+                        source="import"
+                    )
+                    db.add(txn)
+                    transactions_added_local += 1
+                except Exception:
+                    continue
+
+            db.commit()
+            return transactions_added_local
+        
+        # Use Gemini to normalize the ENTIRE CSV in one call (fast) but fall back safely.
+        prompt = f"""
+You are a CSV data normalizer. Given a CSV with transaction data, extract and normalize ALL rows to this exact format:
+Date, Description, Amount, Category, Currency
+
+Rules:
+- Date: Convert to YYYY-MM-DD format
+- Description: The merchant or transaction description
+- Amount: Positive number only (remove currency symbols, convert to float)
+- Category: One of: food, transportation, entertainment, utilities, healthcare, shopping, housing, other (lowercase)
+- Currency: Detect currency from symbols/text (USD, INR, EUR, GBP, etc.) - if unclear, use "USD"
+
+Here's the FULL CSV data:
+{df.to_csv(index=False)}
+
+Column names: {', '.join(df.columns.tolist())}
+
+Return ONLY a JSON array of objects with keys: date, description, amount, category, currency
+Example: [{{"date": "2024-03-12", "description": "Starbucks", "amount": 5.50, "category": "food", "currency": "USD"}}, {{"date": "2024-03-11", "description": "Uber", "amount": 15.00, "category": "transportation", "currency": "USD"}}]
+
+Process ALL rows in the CSV. If you can't determine a field, use:
+- date: today's date
+- description: "Unknown"
+- amount: 0.0
+- category: "other"
+- currency: "USD"
+"""
+        
+        # Demo-safe guardrails: prefer deterministic parser; only use AI for small files.
+        if (not GEMINI_API_KEY) or len(df) > 200:
+            imported = fallback_import(df, override_currency=source_currency)
+            return {
+                "status": "success",
+                "imported": imported,
+                "message": "Imported transactions with fallback parser (AI disabled or file too large).",
+                "detected_currency": None
+            }
+
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        
+        # Parse Gemini response
+        import json
+        import re
+        
+        # Extract JSON from response
+        response_text = response.text.strip()
+        # Remove markdown code blocks if present
+        response_text = re.sub(r'```json\s*|\s*```', '', response_text)
+
+        try:
+            normalized_data = json.loads(response_text)
+        except Exception:
+            # Try to extract first JSON array from messy output
+            m = re.search(r"\[[\s\S]*\]", response_text)
+            if m:
+                normalized_data = json.loads(m.group(0))
+            else:
+                imported = fallback_import(df, override_currency=source_currency)
+                return {
+                    "status": "success",
+                    "imported": imported,
+                    "message": "Imported transactions with fallback parser (AI response invalid).",
+                    "detected_currency": None
+                }
+        
+        # Process normalized data
         transactions_added = 0
-        for _, row in df.iterrows():
-            # Adjust column names depending on what sample CSV we provide realistically
-            amount = float(row.get('Amount', 0.0))
-            txn = models.Transaction(
-                user_id=current_user.user_id,
-                amount=amount,
-                description=str(row.get('Description', 'Imported')),
-                # Add simple rule based catergorizer here if we want initially later
-                category="uncategorized",
-                source="import"
-            )
-            db.add(txn)
-            transactions_added += 1
+        detected_currency = None
+        
+        for row_data in normalized_data:
+            try:
+                # Parse date
+                try:
+                    date_val = pd.to_datetime(row_data['date']).date()
+                except:
+                    date_val = datetime.now().date()
+                
+                amount = float(row_data['amount'])
+                description = str(row_data['description'])
+                category = str(row_data['category']).lower()
+                currency = row_data.get('currency', 'USD')
+                
+                # Track detected currency (respect explicit source_currency override)
+                if not detected_currency:
+                    detected_currency = source_currency or currency
+                
+                # Convert amount if currency doesn't match user's currency
+                effective_src_currency = (source_currency or currency).upper()
+                if effective_src_currency != current_user.currency:
+                    # Simple conversion rates (in production, use real-time rates)
+                    conversion_rates = {
+                        ('INR', 'USD'): 0.012,
+                        ('USD', 'INR'): 83.0,
+                        ('EUR', 'USD'): 1.1,
+                        ('USD', 'EUR'): 0.91,
+                        ('GBP', 'USD'): 1.27,
+                        ('USD', 'GBP'): 0.79
+                    }
+                    
+                    rate = conversion_rates.get((effective_src_currency, current_user.currency), 1.0)
+                    amount = amount * rate
+                
+                txn = models.Transaction(
+                    user_id=current_user.user_id,
+                    amount=amount,
+                    description=description,
+                    category=category,
+                    date=date_val,
+                    source="import"
+                )
+                db.add(txn)
+                transactions_added += 1
+            except Exception as row_error:
+                # Skip problematic rows
+                continue
         
         db.commit()
-        return {"status": "success", "imported": transactions_added}
+        
+        message = f"Successfully imported {transactions_added} transactions using AI normalization"
+        if detected_currency and detected_currency != current_user.currency:
+            message += f" (converted from {detected_currency} to {current_user.currency})"
+        
+        return {
+            "status": "success", 
+            "imported": transactions_added, 
+            "message": message,
+            "detected_currency": detected_currency
+        }
         
     except Exception as e:
+        db.rollback()
         raise HTTPException(status_code=400, detail=f"Error parsing CSV: {str(e)}")
+
+@app.get("/analytics/weekly")
+def get_weekly_analytics(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+    
+    # Get transactions from last 4 weeks
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(weeks=4)
+    
+    transactions = db.query(models.Transaction).filter(
+        models.Transaction.user_id == current_user.user_id,
+        models.Transaction.date >= start_date,
+        models.Transaction.date <= end_date
+    ).all()
+    
+    # Group by week and category
+    weekly_data = []
+    for week_offset in range(4):
+        week_start = end_date - timedelta(weeks=3-week_offset)
+        week_end = week_start + timedelta(days=6)
+        
+        # Convert transaction dates to date objects for comparison
+        week_transactions = []
+        for t in transactions:
+            t_date = t.date.date() if hasattr(t.date, 'date') else t.date
+            if week_start <= t_date <= week_end:
+                week_transactions.append(t)
+        
+        # Aggregate by category for this week
+        category_totals = defaultdict(float)
+        for t in week_transactions:
+            category_totals[t.category.capitalize()] += t.amount
+        
+        # Convert to list format for bar chart race
+        week_data = []
+        colors = ['#ff6b35', '#4f8fe8', '#a78bfa', '#ff4d6d', '#f59e0b', '#06b6d4', '#10b981', '#f97316']
+        for i, (cat, amount) in enumerate(sorted(category_totals.items(), key=lambda x: x[1], reverse=True)):
+            if amount > 0:
+                week_data.append({
+                    'name': cat,
+                    'value': round(amount, 2),
+                    'color': colors[i % len(colors)]
+                })
+        
+        weekly_data.append(week_data)
+    
+    return {
+        "status": "success",
+        "weekly_data": weekly_data,
+        "weeks": 4
+    }
 
 @app.get("/analytics")
 def get_analytics(
@@ -276,11 +867,36 @@ async def scan_receipt(
         
         # We could save this to DB immediately or send it back for user confirmation
         # Let's create the transaction
+        raw_amount = data.get('amount', 0.0)
+        amount_parsed = utils.parse_money(raw_amount)
+        amount_value = float(amount_parsed) if amount_parsed is not None else 0.0
+        amount_value = abs(amount_value)
+
+        raw_cat = data.get('category', 'uncategorized')
+        category_value = str(raw_cat).strip().lower() if raw_cat else "uncategorized"
+        if category_value in {"food", "transportation", "entertainment", "utilities", "healthcare", "shopping", "other"}:
+            pass
+        elif category_value in {"uncategorized", ""}:
+            category_value = "uncategorized"
+        else:
+            category_value = utils.suggest_category(str(data.get("merchant", "")) or "")
+
+        date_val = None
+        raw_date = data.get("date", "")
+        if raw_date:
+            try:
+                date_val = pd.to_datetime(raw_date, errors="coerce")
+            except Exception:
+                date_val = None
+        if not date_val or pd.isna(date_val):
+            date_val = datetime.utcnow()
+
         txn = models.Transaction(
             user_id=current_user.user_id,
-            amount=data.get('amount', 0.0),
+            amount=amount_value,
             description=f"Receipt: {data.get('merchant', 'Unknown')}",
-            category=data.get('category', 'uncategorized'),
+            category=category_value,
+            date=date_val,
             source="receipt"
         )
         db.add(txn)
@@ -289,7 +905,7 @@ async def scan_receipt(
         
         return {
             "status": "success", 
-            "message": f"Extracted receipt from {data.get('merchant', 'Unknown')} for ${data.get('amount', 0.0)}",
+            "message": f"Extracted receipt from {data.get('merchant', 'Unknown')} for {current_user.currency_symbol}{amount_value}",
             "transaction": txn
         }
     except Exception as e:
@@ -307,19 +923,77 @@ async def chat_with_ai(
         raise HTTPException(status_code=400, detail="Gemini API Key is not configured. Please add it to your .env file.")
         
     try:
-        # Get user context (last 5 transactions to keep it fast)
+        # Get richer context (last 20 txns + monthly aggregates)
         recent_txns = db.query(models.Transaction)\
             .filter(models.Transaction.user_id == current_user.user_id)\
             .order_by(models.Transaction.date.desc())\
-            .limit(5).all()
-            
-        txn_context = "\n".join([f"- ${t.amount} for {t.description} on {t.date.strftime('%Y-%m-%d') if t.date else 'unknown date'} ({t.category})" for t in recent_txns])
-        if not txn_context:
-            txn_context = "No recent transactions found."
+            .limit(20).all()
+
+        # Monthly windows
+        start_this, end_this = _month_window(0)
+        start_last, end_last = _month_window(-1)
+        this_month_txns = db.query(models.Transaction).filter(
+            models.Transaction.user_id == current_user.user_id,
+            models.Transaction.date >= start_this,
+            models.Transaction.date < end_this
+        ).all()
+        last_month_txns = db.query(models.Transaction).filter(
+            models.Transaction.user_id == current_user.user_id,
+            models.Transaction.date >= start_last,
+            models.Transaction.date < end_last
+        ).all()
+
+        def agg(txns):
+            by_cat = defaultdict(float)
+            by_merch = defaultdict(float)
+            total = 0.0
+            for t in txns:
+                total += float(t.amount or 0)
+                by_cat[(t.category or "other").lower()] += float(t.amount or 0)
+                mkey = utils.normalize_merchant_key(t.description or "")
+                by_merch[mkey] += float(t.amount or 0)
+            top_cats = sorted(by_cat.items(), key=lambda x: x[1], reverse=True)[:5]
+            top_merch = sorted(by_merch.items(), key=lambda x: x[1], reverse=True)[:5]
+            return {
+                "total": round(total, 2),
+                "top_categories": [{"category": k, "amount": round(v, 2)} for k, v in top_cats],
+                "top_merchants": [{"merchant": (k.title() if k and k != "unknown" else "Unknown"), "amount": round(v, 2)} for k, v in top_merch],
+            }
+
+        context_obj = {
+            "currency": current_user.currency,
+            "currency_symbol": current_user.currency_symbol,
+            "this_month": {"window": [start_this.date().isoformat(), (end_this - timedelta(days=1)).date().isoformat()], **agg(this_month_txns)},
+            "last_month": {"window": [start_last.date().isoformat(), (end_last - timedelta(days=1)).date().isoformat()], **agg(last_month_txns)},
+            "recent_transactions": [
+                {
+                    "transaction_id": t.transaction_id,
+                    "date": t.date.strftime('%Y-%m-%d') if t.date else None,
+                    "amount": float(t.amount or 0),
+                    "category": (t.category or "other").lower(),
+                    "description": t.description or ""
+                }
+                for t in recent_txns
+            ],
+            "active_goals": [
+                {
+                    "goal_id": g.goal_id,
+                    "goal_type": g.goal_type,
+                    "target_amount": float(g.target_amount or 0),
+                    "deadline": g.deadline.strftime('%Y-%m-%d') if g.deadline else None,
+                    "status": g.status
+                }
+                for g in db.query(models.BudgetGoal).filter(
+                    models.BudgetGoal.user_id == current_user.user_id,
+                    models.BudgetGoal.status == "active"
+                ).all()
+            ]
+        }
 
         model = genai.GenerativeModel('gemini-2.5-flash')
         
         # Determine Persona
+        txn_context = json.dumps(context_obj, default=str)
         if chat_req.roast_mode:
             system_prompt = f"""
             You are FinMate, an absolutely ruthless, sarcastic, and funny AI financial advisor.
@@ -338,32 +1012,123 @@ async def chat_with_ai(
             {txn_context}
             """
             
-        # Action Parser Prompt (to see if the AI should take agency)
-        action_prompt = """
-        IMPORTANT: If the user is asking to cancel a subscription, negotiate a bill, or draft an email related to finances, 
-        you MUST output your response in valid JSON format EXACTLY like this (no markdown blocks around it):
-        {
-           "response": "Here is the template you requested...",
-           "action_type": "email_template",
-           "action_payload": {
-               "subject": "Cancellation of Subscription",
-               "body": "Your generated email text here"
-           }
-        }
-        Do NOT output JSON if they are just asking a general question. If it's a general question, just output plain text.
-        """
+        # Tool-action prompt (upgrade assistant from chat -> actions)
+        action_prompt = f"""
+CONTEXT (JSON, reliable):
+{json.dumps(context_obj)}
+
+You can answer normally OR you can trigger one tool action by outputting STRICT JSON.
+
+If you trigger an action, return ONLY JSON (no markdown) in this exact shape:
+{{
+  "response": "A short, friendly message to the user about what happened and why.",
+  "action_type": "create_budget_goal" | "show_transactions" | "recategorize_transactions",
+  "action_payload": {{ ... }}
+}}
+
+Allowed actions:
+1) create_budget_goal
+  action_payload: {{
+    "goal_type": "savings" | "debt_repayment" | "investment",
+    "target_amount": number,
+    "deadline": "YYYY-MM-DD"
+  }}
+
+2) show_transactions
+  action_payload: {{
+    "merchant_query": "string",
+    "limit": number
+  }}
+
+3) recategorize_transactions
+  action_payload: {{
+    "transaction_ids": [number, ...],
+    "category": "food"|"transportation"|"entertainment"|"utilities"|"healthcare"|"shopping"|"housing"|"other"
+  }}
+
+Rules:
+- Only output JSON when you truly want the backend to perform one of these actions.
+- For recategorize: pick transaction_ids from CONTEXT.recent_transactions (typically 1-20 ids).
+- Otherwise respond in plain text.
+"""
         
         full_prompt = system_prompt + "\n" + action_prompt + "\n\nUser says: " + chat_req.message
         
         response = model.generate_content(full_prompt)
         text = response.text.strip()
         
-        # Check if the AI returned the Action JSON
+        # Check if the AI returned Action JSON
         if text.startswith('{') and text.endswith('}'):
             try:
                 # Need to strip possible markdown that might wrap it despite instructions
                 clean_text = text.replace('```json', '').replace('```', '').strip()
                 data = json.loads(clean_text)
+                action_type = data.get("action_type")
+                payload = data.get("action_payload") or {}
+
+                if action_type == "create_budget_goal":
+                    goal_type = str(payload.get("goal_type", "savings")).strip()
+                    target_amount = float(payload.get("target_amount", 0))
+                    deadline_s = str(payload.get("deadline", "")).strip()
+                    deadline_dt = pd.to_datetime(deadline_s, errors="coerce")
+                    if target_amount <= 0 or deadline_dt is None or pd.isna(deadline_dt):
+                        raise ValueError("Invalid goal payload")
+                    new_goal = models.BudgetGoal(
+                        user_id=current_user.user_id,
+                        goal_type=goal_type,
+                        target_amount=target_amount,
+                        deadline=deadline_dt.to_pydatetime()
+                    )
+                    db.add(new_goal)
+                    db.commit()
+                    db.refresh(new_goal)
+                    return schemas.ChatResponse(
+                        response=data.get("response") or f"Goal created: {goal_type} target {current_user.currency_symbol}{target_amount:.0f} by {deadline_dt.date().isoformat()}.",
+                        action_type="create_budget_goal",
+                        action_payload={"goal_id": new_goal.goal_id, "goal_type": goal_type, "target_amount": target_amount, "deadline": deadline_dt.date().isoformat()}
+                    )
+
+                if action_type == "show_transactions":
+                    q = str(payload.get("merchant_query", "")).strip()
+                    limit = int(payload.get("limit", 12) or 12)
+                    limit = max(1, min(25, limit))
+                    if not q:
+                        raise ValueError("Missing merchant_query")
+                    matches = db.query(models.Transaction).filter(
+                        models.Transaction.user_id == current_user.user_id,
+                        models.Transaction.description.ilike(f"%{q}%")
+                    ).order_by(models.Transaction.date.desc()).limit(limit).all()
+                    items = [
+                        {"transaction_id": t.transaction_id, "date": t.date.strftime("%Y-%m-%d") if t.date else None, "amount": float(t.amount or 0), "category": (t.category or "other"), "description": t.description}
+                        for t in matches
+                    ]
+                    return schemas.ChatResponse(
+                        response=data.get("response") or f"Here are the most recent transactions matching “{q}”.",
+                        action_type="show_transactions",
+                        action_payload={"merchant_query": q, "transactions": items}
+                    )
+
+                if action_type == "recategorize_transactions":
+                    ids = payload.get("transaction_ids") or []
+                    category = str(payload.get("category", "other")).strip().lower()
+                    if not isinstance(ids, list) or not ids:
+                        raise ValueError("Missing transaction_ids")
+                    updated = 0
+                    for tid in ids:
+                        txn = db.query(models.Transaction).filter(
+                            models.Transaction.user_id == current_user.user_id,
+                            models.Transaction.transaction_id == int(tid)
+                        ).first()
+                        if txn:
+                            txn.category = category
+                            updated += 1
+                    db.commit()
+                    return schemas.ChatResponse(
+                        response=data.get("response") or f"Updated {updated} transactions to category “{category}”.",
+                        action_type="recategorize_transactions",
+                        action_payload={"updated": updated, "category": category, "transaction_ids": ids}
+                    )
+
                 return schemas.ChatResponse(
                     response=data.get('response', 'Action executed.'),
                     action_type=data.get('action_type', 'none'),
@@ -371,6 +1136,8 @@ async def chat_with_ai(
                 )
             except json.JSONDecodeError:
                 pass # Fall back to treating it as regular text
+            except Exception:
+                pass
                 
         return schemas.ChatResponse(
             response=text,
@@ -391,13 +1158,10 @@ def create_budget_goal(
     current_user: models.User = Depends(auth.get_current_user)
 ):
     """Create a new budget goal"""
-    try:
-        if goal.target_amount <= 0:
-            raise utils.ValidationError("Target amount must be positive")
-        if goal.deadline <= datetime.utcnow():
-            raise utils.ValidationError("Deadline must be in the future")
-    except utils.ValidationError as e:
-        raise HTTPException(status_code=422, detail=str(e.detail))
+    if goal.target_amount <= 0:
+        raise HTTPException(status_code=422, detail="Target amount must be positive")
+    if goal.deadline <= datetime.utcnow():
+        raise HTTPException(status_code=422, detail="Deadline must be in the future")
     
     new_goal = models.BudgetGoal(
         user_id=current_user.user_id,
@@ -690,10 +1454,9 @@ def get_savings_leaderboard(
     
     leaderboard = []
     for stat in all_stats:
-        user = db.query(models.User).filter(models.User.user_id == stat.user_id).first()
         leaderboard.append({
             "rank": len(leaderboard) + 1,
-            "name": user.full_name if user else "Anonymous",
+            "name": f"Saver #{stat.user_id % 1000:03d}",
             "streak": stat.longest_streak,
             "xp": stat.total_xp
         })
@@ -737,6 +1500,97 @@ def get_enhanced_analytics(
         "period_days": days
     }
 
+
+@app.get("/analytics/overview")
+def get_overview_analytics(
+    month_offset: int = Query(0, ge=-12, le=0, description="0=current month, -1=last month"),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    """
+    Dashboard-focused analytics bundle:
+    - health score
+    - spending this month + weekly breakdown (last 4 weeks within window)
+    - top 3 takeaways (biggest category, biggest merchant, delta vs last month)
+    """
+    start, end = _month_window(month_offset)
+    txns = db.query(models.Transaction).filter(
+        models.Transaction.user_id == current_user.user_id,
+        models.Transaction.date >= start,
+        models.Transaction.date < end
+    ).all()
+
+    total_spent = float(round(sum(t.amount for t in txns), 2))
+    health_score = utils.calculate_health_score(
+        total_spent,
+        current_user.profile.monthly_income if current_user.profile else None
+    )
+
+    # Biggest category
+    by_category = defaultdict(float)
+    for t in txns:
+        if t.category:
+            by_category[t.category.lower()] += float(t.amount or 0)
+    biggest_category = None
+    if by_category:
+        cat, amt = max(by_category.items(), key=lambda x: x[1])
+        biggest_category = {"category": cat, "amount": round(amt, 2)}
+
+    # Biggest merchant (normalized)
+    by_merchant = defaultdict(float)
+    for t in txns:
+        key = utils.normalize_merchant_key(t.description or "")
+        by_merchant[key] += float(t.amount or 0)
+    biggest_merchant = None
+    if by_merchant:
+        mkey, amt = max(by_merchant.items(), key=lambda x: x[1])
+        merchant_label = mkey.title() if mkey and mkey != "unknown" else "Unknown Merchant"
+        biggest_merchant = {"merchant": merchant_label, "amount": round(amt, 2)}
+
+    # Delta vs last month
+    prev_start, prev_end = _month_window(month_offset - 1)
+    prev_txns = db.query(models.Transaction).filter(
+        models.Transaction.user_id == current_user.user_id,
+        models.Transaction.date >= prev_start,
+        models.Transaction.date < prev_end
+    ).all()
+    prev_total = float(round(sum(t.amount for t in prev_txns), 2))
+    delta = round(total_spent - prev_total, 2)
+    delta_pct = None
+    if prev_total > 0:
+        delta_pct = round((delta / prev_total) * 100.0, 1)
+
+    # Weekly totals (up to last 4 weeks within window)
+    weekly = []
+    cursor = start
+    while cursor < end:
+        week_end = min(cursor + timedelta(days=7), end)
+        week_total = 0.0
+        for t in txns:
+            if t.date and cursor <= t.date < week_end:
+                week_total += float(t.amount or 0)
+        weekly.append({
+            "start": cursor.date().isoformat(),
+            "end": (week_end - timedelta(days=1)).date().isoformat(),
+            "total": round(week_total, 2)
+        })
+        cursor = week_end
+    weekly = weekly[-4:]
+
+    return {
+        "window": {"start": start.date().isoformat(), "end": (end - timedelta(days=1)).date().isoformat()},
+        "total_spent": total_spent,
+        "previous_total_spent": prev_total,
+        "delta_vs_last_month": {"amount": delta, "percent": delta_pct},
+        "health_score": health_score,
+        "takeaways": {
+            "biggest_category": biggest_category,
+            "biggest_merchant": biggest_merchant
+        },
+        "weekly": weekly,
+        "by_category": {k: round(v, 2) for k, v in by_category.items()}
+    }
+
 @app.get("/analytics/trends")
 def get_spending_trends(
     category: str = None,
@@ -772,4 +1626,173 @@ def get_spending_trends(
     
     return {"trends": trends[:13]}  # 13 weeks ~3 months
 
+
+def _detect_subscription_candidates(db: Session, current_user: models.User):
+    """
+    Heuristic recurring-merchant detector optimized for demo reliability.
+    """
+    from datetime import timedelta
+    import statistics
+
+    lookback_days = 180
+    start_date = datetime.utcnow() - timedelta(days=lookback_days)
+    txns = db.query(models.Transaction).filter(
+        models.Transaction.user_id == current_user.user_id,
+        models.Transaction.date >= start_date
+    ).order_by(models.Transaction.date.asc()).all()
+
+    by_merchant = defaultdict(list)
+    for t in txns:
+        key = utils.normalize_merchant_key(t.description)
+        by_merchant[key].append(t)
+
+    candidates = []
+    for merchant_key, items in by_merchant.items():
+        if len(items) < 2:
+            continue
+
+        dates = sorted([i.date for i in items if i.date])
+        if len(dates) < 2:
+            continue
+
+        diffs = []
+        for a, b in zip(dates, dates[1:]):
+            diffs.append((b - a).days)
+        diffs = [d for d in diffs if 1 <= d <= 90]
+        if not diffs:
+            continue
+
+        median_diff = int(statistics.median(diffs))
+        # subscription-ish: roughly monthly cadence
+        if not (20 <= median_diff <= 45):
+            continue
+
+        avg_amount = round(sum(i.amount for i in items) / len(items), 2)
+        last_seen_at = max(dates)
+        occurrences = len(items)
+
+        closeness = max(0.0, 1.0 - (abs(median_diff - 30) / 15.0))  # 30±15 -> 1..0
+        confidence = 0.5 + min(0.3, max(0.0, (occurrences - 2) * 0.1)) + (0.2 * closeness)
+        confidence = max(0.0, min(1.0, confidence))
+
+        candidate_id = utils.make_candidate_id(current_user.user_id, merchant_key)
+        merchant = merchant_key.title() if merchant_key != "unknown" else "Unknown Merchant"
+
+        candidates.append({
+            "candidate_id": candidate_id,
+            "merchant": merchant,
+            "avg_amount": float(avg_amount),
+            "estimated_monthly_cost": float(avg_amount),
+            "occurrences": int(occurrences),
+            "interval_days": int(median_diff),
+            "last_seen_at": last_seen_at,
+            "confidence": float(round(confidence, 2))
+        })
+
+    # Sort: highest monthly cost first, then confidence
+    candidates.sort(key=lambda c: (c["estimated_monthly_cost"], c["confidence"]), reverse=True)
+    return candidates[:12]
+
+
+@app.get("/subscriptions/detect", response_model=schemas.SubscriptionDetectResponse)
+def detect_subscriptions(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    raise HTTPException(status_code=410, detail="Subscription creep feature removed.")
+
+
+@app.post("/subscriptions/{candidate_id}/action", response_model=schemas.SubscriptionActionResponse)
+def subscription_action(
+    candidate_id: str,
+    req: schemas.SubscriptionActionRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user)
+):
+    raise HTTPException(status_code=410, detail="Subscription creep feature removed.")
+
+
+@app.get("/subscriptions/suspects", response_model=list[schemas.SubscriptionSuspectOut])
+def list_subscription_suspects(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Lightweight, suggestion-only subscription suspects list.
+    Uses heuristic detection and overlays any stored keep/removed decisions.
+    """
+    candidates = _detect_subscription_candidates(db, current_user)
+
+    # Load existing decisions for this user
+    decisions = db.query(models.SubscriptionDecision).filter(
+        models.SubscriptionDecision.user_id == current_user.user_id
+    ).all()
+    by_candidate = {d.candidate_id: d for d in decisions}
+
+    result: list[schemas.SubscriptionSuspectOut] = []
+    for c in candidates:
+        decision_obj = by_candidate.get(c["candidate_id"])
+        decision: str | None = None
+        if decision_obj:
+            # Map internal actions to simple keep/removed flags for UI
+            if decision_obj.action == "keep":
+                decision = "keep"
+            elif decision_obj.action in {"cancel", "removed"}:
+                decision = "removed"
+        result.append(
+            schemas.SubscriptionSuspectOut(
+                candidate_id=c["candidate_id"],
+                merchant=c["merchant"],
+                avg_amount=c["avg_amount"],
+                estimated_monthly_cost=c["estimated_monthly_cost"],
+                occurrences=c["occurrences"],
+                interval_days=c["interval_days"],
+                last_seen_at=c["last_seen_at"],
+                confidence=c["confidence"],
+                decision=decision,
+            )
+        )
+    return result
+
+
+@app.post("/subscriptions/suspects/{candidate_id}/decision")
+def set_subscription_suspect_decision(
+    candidate_id: str,
+    req: schemas.SubscriptionSuspectDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Store a simple keep/removed decision for a subscription suspect.
+    """
+    # Find an example candidate to copy metadata from (best-effort)
+    candidates = _detect_subscription_candidates(db, current_user)
+    meta = next((c for c in candidates if c["candidate_id"] == candidate_id), None)
+
+    action_internal = "keep" if req.decision == "keep" else "cancel"
+
+    decision = (
+        db.query(models.SubscriptionDecision)
+        .filter(
+            models.SubscriptionDecision.user_id == current_user.user_id,
+            models.SubscriptionDecision.candidate_id == candidate_id,
+        )
+        .first()
+    )
+    if not decision:
+        decision = models.SubscriptionDecision(
+            user_id=current_user.user_id,
+            candidate_id=candidate_id,
+            merchant=meta["merchant"] if meta else "",
+            avg_amount=meta["avg_amount"] if meta else 0.0,
+            interval_days=meta["interval_days"] if meta else 30,
+            occurrences=meta["occurrences"] if meta else 0,
+            last_seen_at=meta["last_seen_at"] if meta else None,
+            action=action_internal,
+        )
+        db.add(decision)
+    else:
+        decision.action = action_internal
+    db.commit()
+    return {"status": "success", "decision": req.decision}
 

@@ -1,6 +1,7 @@
 import { useContext, useEffect, useState } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
+import { API_URL } from '../apiConfig';
 import { Trophy, Zap, Award } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -21,7 +22,7 @@ export default function Gamification() {
 
   const fetchStats = async () => {
     try {
-      const res = await axios.get('http://127.0.0.1:8000/stats', {
+      const res = await axios.get(`${API_URL}/stats`, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setStats(res.data);
@@ -32,7 +33,7 @@ export default function Gamification() {
 
   const fetchAchievements = async () => {
     try {
-      const res = await axios.get('http://127.0.0.1:8000/achievements', {
+      const res = await axios.get(`${API_URL}/achievements`, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setAchievements(res.data);
@@ -45,7 +46,7 @@ export default function Gamification() {
 
   const fetchLeaderboard = async () => {
     try {
-      const res = await axios.get('http://127.0.0.1:8000/leaderboard/savings-rate', {
+      const res = await axios.get(`${API_URL}/leaderboard/savings-rate`, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setLeaderboard(res.data.leaderboard || []);

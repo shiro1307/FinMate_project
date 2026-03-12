@@ -2,6 +2,7 @@ import { useState, useContext } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
+import { API_URL } from '../apiConfig';
 import { motion } from 'framer-motion';
 import { UserPlus, Wallet } from 'lucide-react';
 
@@ -21,7 +22,7 @@ export default function Signup() {
 
     try {
       // 1. Register User
-      await axios.post('http://127.0.0.1:8000/signup', {
+      await axios.post(`${API_URL}/signup`, {
         email,
         password,
         full_name: fullName
@@ -32,20 +33,53 @@ export default function Signup() {
       formData.append('username', email);
       formData.append('password', password);
 
-      const res = await axios.post('http://127.0.0.1:8000/login', formData, {
+      const res = await axios.post(`${API_URL}/login`, formData, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
 
       const token = res.data.access_token;
       
       // Fetch real user data from /me
-      const meRes = await axios.get('http://127.0.0.1:8000/me', {
+      const meRes = await axios.get(`${API_URL}/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       auth?.login(token, meRes.data);
       navigate('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to sign up.');
+      const detail = err?.response?.data?.detail;
+
+      // #region agent log
+      fetch('http://127.0.0.1:7500/ingest/cac223f9-661c-41c5-83f1-0a6ae276f3f1', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Debug-Session-Id': '907a7e',
+        },
+        body: JSON.stringify({
+          sessionId: '907a7e',
+          runId: 'signup-pre-fix',
+          hypothesisId: 'H1-H3',
+          location: 'Signup.tsx:48-52',
+          message: 'signup_error_response',
+          data: { detail },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+
+      let friendly = 'Failed to sign up.';
+      if (Array.isArray(detail)) {
+        // Pydantic validation errors: join all messages
+        friendly = detail
+          .map((d: any) => d?.msg || JSON.stringify(d))
+          .join(' | ');
+      } else if (typeof detail === 'string') {
+        friendly = detail;
+      } else if (detail && typeof detail === 'object') {
+        friendly = (detail as any).msg || JSON.stringify(detail);
+      }
+
+      setError(friendly);
     } finally {
       setLoading(false);
     }

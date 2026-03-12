@@ -1,6 +1,7 @@
 import { useState, useContext } from 'react';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
+import { API_URL } from '../apiConfig';
 import { PlusCircle, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -20,6 +21,7 @@ export default function ManualTransactionForm({ onSuccess }: Props) {
     amount: '',
     description: '',
     category: 'Food',
+    date: new Date().toISOString().split('T')[0],
     source: 'manual'
   });
 
@@ -27,14 +29,14 @@ export default function ManualTransactionForm({ onSuccess }: Props) {
     e.preventDefault();
     setLoading(true);
     try {
-      await axios.post('http://127.0.0.1:8000/transactions', {
+      await axios.post(`${API_URL}/transactions`, {
         ...form,
         amount: parseFloat(form.amount)
       }, {
         headers: { Authorization: `Bearer ${auth?.token}` }
       });
       setSuccess(true);
-      setForm({ amount: '', description: '', category: 'Food', source: 'manual' });
+      setForm({ amount: '', description: '', category: 'Food', date: new Date().toISOString().split('T')[0], source: 'manual' });
       onSuccess?.();
       setTimeout(() => {
         setSuccess(false);
@@ -88,15 +90,25 @@ export default function ManualTransactionForm({ onSuccess }: Props) {
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-[--color-text-secondary] mb-1">Category</label>
-                  <select
-                    value={form.category}
-                    onChange={e => setForm({ ...form, category: e.target.value })}
-                    className="w-full bg-[#0d1220] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-[--color-accent-purple] transition-colors"
-                  >
-                    {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
-                  </select>
+                  <label className="block text-xs text-[--color-text-secondary] mb-1">Date</label>
+                  <input
+                    type="date"
+                    required
+                    value={form.date}
+                    onChange={e => setForm({ ...form, date: e.target.value })}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-[--color-accent-purple] transition-colors"
+                  />
                 </div>
+              </div>
+              <div>
+                <label className="block text-xs text-[--color-text-secondary] mb-1">Category</label>
+                <select
+                  value={form.category}
+                  onChange={e => setForm({ ...form, category: e.target.value })}
+                  className="w-full bg-[#0d1220] border border-white/10 rounded-lg px-3 py-2 text-sm outline-none focus:border-[--color-accent-purple] transition-colors"
+                >
+                  {CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-xs text-[--color-text-secondary] mb-1">Description</label>

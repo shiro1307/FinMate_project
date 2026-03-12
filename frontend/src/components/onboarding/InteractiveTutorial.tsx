@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from 'framer-motion';
 import { useState } from 'react';
-import { X, ArrowRight, Check } from 'lucide-react';
+import { X, ArrowRight } from 'lucide-react';
 
 interface TutorialStep {
   id: number;
@@ -14,30 +14,30 @@ const tutorialSteps: TutorialStep[] = [
   {
     id: 1,
     title: 'Welcome to FinMate!',
-    description: 'Let\'s take a quick tour of your new financial dashboard',
-    target: 'hero-metric',
-    action: 'View your spending overview'
+    description: 'We\'ll take a very quick 4-step tour so you can see how to import data, spot leaks, predict spending, and talk to the coach.',
+    target: 'welcome',
+    action: 'Next'
   },
   {
     id: 2,
-    title: 'Scan Your First Receipt',
-    description: 'Use AI to automatically extract transaction details from receipts',
-    target: 'receipt-scanner',
-    action: 'Try scanning a receipt'
+    title: 'Import your transactions',
+    description: 'Use the Smart Import card to upload CSVs and receipts. Confirm the column mapping and currency before you import.',
+    target: 'data-import',
+    action: 'Open Smart Import'
   },
   {
     id: 3,
-    title: 'Set Your First Goal',
-    description: 'Create savings goals and track your progress',
-    target: 'budget-goals',
-    action: 'Create a goal'
+    title: 'Spot subscription leaks',
+    description: 'Visit the Subscriptions tab to see merchants that look like recurring charges and mark them as kept or removed.',
+    target: 'subscriptions',
+    action: 'Review suspects'
   },
   {
     id: 4,
-    title: 'Chat with FinMate',
-    description: 'Get personalized financial advice from your AI assistant',
-    target: 'chat-interface',
-    action: 'Start chatting'
+    title: 'Predict & get advice',
+    description: 'Use the Prediction and Coach tabs to see where your spending is headed and ask FinMate for concrete ways to save.',
+    target: 'coach',
+    action: 'Open FinMate Coach'
   }
 ];
 
@@ -68,6 +68,7 @@ export default function InteractiveTutorial({ isVisible, onComplete, onSkip }: I
 
   const progress = ((currentStep + 1) / tutorialSteps.length) * 100;
   const step = tutorialSteps[currentStep];
+  const stepImage = `/tutorial/${step.id}.png`;
 
   if (!isVisible) return null;
 
@@ -102,13 +103,34 @@ export default function InteractiveTutorial({ isVisible, onComplete, onSkip }: I
           </div>
 
           {/* Progress Bar */}
-          <div className="mb-6">
+          <div className="mb-4">
             <motion.div
               initial={{ width: 0 }}
               animate={{ width: `${progress}%` }}
               transition={{ duration: 0.5 }}
               className="h-2 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full"
             />
+          </div>
+
+          {/* Intro copy and step pills */}
+          <div className="mb-6">
+            <p className="text-xs text-gray-400 mb-3">
+              A quick 4-step tour to help you get comfortable with your FinMate workspace.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {tutorialSteps.map((s, index) => (
+                <span
+                  key={s.id}
+                  className={`px-2 py-1 rounded-full text-[11px] border ${
+                    index === currentStep
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                      : 'border-white/10 text-gray-400'
+                  }`}
+                >
+                  {s.title}
+                </span>
+              ))}
+            </div>
           </div>
 
           {/* Content */}
@@ -118,8 +140,18 @@ export default function InteractiveTutorial({ isVisible, onComplete, onSkip }: I
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.4 }}
           >
-            <h3 className="text-2xl font-bold text-white mb-3">{step.title}</h3>
-            <p className="text-gray-400 mb-6">{step.description}</p>
+            <h3 className="text-2xl font-bold text-white mb-2">{step.title}</h3>
+            <p className="text-gray-400 mb-3">{step.description}</p>
+            <div className="mb-4">
+              <img
+                src={stepImage}
+                alt={step.title}
+                className="w-full rounded-lg border border-white/10 object-cover"
+              />
+            </div>
+            <p className="text-xs text-gray-500 mb-6">
+              Focus area: <span className="font-medium text-gray-300">{step.target.replace('-', ' ')}</span>
+            </p>
 
             {/* Action Button */}
             <motion.button
@@ -128,7 +160,7 @@ export default function InteractiveTutorial({ isVisible, onComplete, onSkip }: I
               onClick={() => handleStepComplete(step.id)}
               className="w-full px-6 py-3 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-lg font-semibold hover:shadow-lg hover:shadow-cyan-500/50 transition-shadow flex items-center justify-center gap-2"
             >
-              {step.action}
+              {currentStep === tutorialSteps.length - 1 ? 'Complete' : 'Next'}
               <ArrowRight className="w-4 h-4" />
             </motion.button>
           </motion.div>
@@ -140,22 +172,6 @@ export default function InteractiveTutorial({ isVisible, onComplete, onSkip }: I
           >
             Skip tutorial
           </button>
-        </motion.div>
-
-        {/* Highlight Overlay */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="absolute inset-0 pointer-events-none"
-        >
-          {/* This would highlight the target element */}
-          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
-            <motion.div
-              animate={{ scale: [1, 1.1, 1] }}
-              transition={{ duration: 2, repeat: Infinity }}
-              className="w-32 h-32 border-2 border-cyan-500 rounded-lg opacity-50"
-            />
-          </div>
         </motion.div>
       </motion.div>
     </AnimatePresence>

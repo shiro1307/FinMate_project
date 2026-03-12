@@ -12,6 +12,8 @@ class User(Base):
     full_name = Column(String)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     preferences = Column(String, default="{}") # JSON string
+    currency = Column(String, default="USD") # USD, INR, EUR, GBP, etc.
+    currency_symbol = Column(String, default="$") # $, ₹, €, £, etc.
 
     profile = relationship("FinancialProfile", back_populates="user", uselist=False)
     transactions = relationship("Transaction", back_populates="user")
@@ -19,6 +21,7 @@ class User(Base):
     stats = relationship("UserStats", foreign_keys="UserStats.user_id", uselist=False)
     achievements = relationship("Achievement", foreign_keys="Achievement.user_id")
     notifications = relationship("Notification", foreign_keys="Notification.user_id")
+    subscription_decisions = relationship("SubscriptionDecision", foreign_keys="SubscriptionDecision.user_id")
 
 class FinancialProfile(Base):
     __tablename__ = "financial_profiles"
@@ -109,6 +112,29 @@ class ReceiptPending(Base):
     extracted_data = Column(String)  # JSON string
     receipt_image_path = Column(String)
     status = Column(String, default="pending")  # pending/confirmed/rejected
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    user = relationship("User", foreign_keys=[user_id])
+
+
+class SubscriptionDecision(Base):
+    """
+    User decision on a detected recurring/subscription-like merchant.
+    candidate_id is a stable identifier computed by backend detection.
+    """
+    __tablename__ = "subscription_decisions"
+
+    decision_id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.user_id"), index=True)
+
+    candidate_id = Column(String, index=True)  # e.g., hash from merchant key
+    merchant = Column(String)
+    avg_amount = Column(Float, default=0.0)
+    interval_days = Column(Integer, default=30)
+    occurrences = Column(Integer, default=0)
+    last_seen_at = Column(DateTime)
+
+    action = Column(String)  # keep/cancel/negotiate
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     user = relationship("User", foreign_keys=[user_id])

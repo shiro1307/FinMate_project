@@ -6,6 +6,8 @@ interface User {
   user_id: number;
   email: string;
   full_name: string;
+  currency?: string;
+  currency_symbol?: string;
 }
 
 interface AuthContextType {

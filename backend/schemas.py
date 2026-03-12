@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, field_validator, Field
-from typing import Optional, List
+from typing import Optional, List, Literal
 from datetime import datetime
 
 class UserCreate(BaseModel):
@@ -25,6 +25,8 @@ class UserOut(BaseModel):
     email: EmailStr
     full_name: str
     created_at: datetime
+    currency: Optional[str] = "USD"
+    currency_symbol: Optional[str] = "$"
 
     class Config:
         from_attributes = True
@@ -126,3 +128,55 @@ class ReceiptConfirmRequest(BaseModel):
     amount: Optional[float] = None
     description: Optional[str] = None
     category: Optional[str] = None
+
+
+class SubscriptionCandidate(BaseModel):
+    candidate_id: str
+    merchant: str
+    avg_amount: float
+    estimated_monthly_cost: float
+    occurrences: int
+    interval_days: int
+    last_seen_at: datetime
+    confidence: float = Field(..., ge=0, le=1)
+
+
+class SubscriptionDetectResponse(BaseModel):
+    candidates: List[SubscriptionCandidate]
+    estimated_monthly_leak: float
+    estimated_monthly_savings: float
+
+
+class SubscriptionActionRequest(BaseModel):
+    action: Literal["keep", "cancel", "negotiate"]
+    merchant: str
+    avg_amount: float
+    interval_days: int = 30
+    occurrences: int = 0
+    last_seen_at: Optional[datetime] = None
+
+
+class SubscriptionActionResponse(BaseModel):
+    status: str
+    action: str
+    estimated_monthly_savings: float
+    current_streak: int
+    total_xp: int
+    action_type: Optional[str] = None
+    action_payload: Optional[dict] = None
+
+
+class SubscriptionSuspectOut(BaseModel):
+    candidate_id: str
+    merchant: str
+    avg_amount: float
+    estimated_monthly_cost: float
+    occurrences: int
+    interval_days: int
+    last_seen_at: datetime
+    confidence: float
+    decision: Optional[str] = None
+
+
+class SubscriptionSuspectDecisionRequest(BaseModel):
+    decision: Literal["keep", "removed"]

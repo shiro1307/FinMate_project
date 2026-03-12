@@ -19,8 +19,6 @@ interface YearInReviewProps {
 
 export default function YearInReview({ data, onShare, onDownload }: YearInReviewProps) {
   const avgMonthlySpending = data.totalSpent / 12;
-  const bestMonth = Math.min(...data.monthlyTrend);
-  const worstMonth = Math.max(...data.monthlyTrend);
 
   return (
     <motion.div

@@ -9,6 +9,65 @@ import models
 import json
 from collections import defaultdict
 
+def generate_subscription_email_template(merchant: str, action: str, gemini_key: str) -> Dict[str, str]:
+    """
+    Returns {subject, body}. Uses Gemini if configured, otherwise deterministic fallback.
+    action: cancel | negotiate
+    """
+    merchant = (merchant or "the service").strip()
+    action = (action or "").lower().strip()
+
+    fallback = {
+        "subject": f"Request regarding my {merchant} subscription",
+        "body": (
+            f"Hello {merchant} Support,\n\n"
+            "I’m reaching out about my account/subscription. "
+            + (
+                "I would like to cancel effective immediately and confirm there will be no further charges.\n\n"
+                "Please confirm cancellation and the date it takes effect.\n\n"
+                "Thank you,\n"
+                "[Your Name]\n"
+                "[Your Account Email]\n"
+                if action == "cancel"
+                else
+                "I’m considering cancelling, but I wanted to ask if you can offer a better rate or a retention discount. "
+                "If not, please let me know the steps to cancel.\n\n"
+                "Thank you,\n"
+                "[Your Name]\n"
+                "[Your Account Email]\n"
+            )
+        )
+    }
+
+    if not gemini_key:
+        return fallback
+
+    try:
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        prompt = f"""
+You write concise, professional customer emails.
+
+Write a {action} email for this merchant/service: {merchant}
+
+Return ONLY strict JSON with keys: subject, body
+Constraints:
+- body should be 120-220 words
+- include placeholders: [Your Name], [Your Account Email]
+- if action is negotiate: ask for a discount/retention offer politely
+- if action is cancel: request confirmation of cancellation and that no further charges occur
+"""
+        resp = model.generate_content(prompt)
+        text = (resp.text or "").strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(text)
+        if isinstance(data, dict) and "subject" in data and "body" in data:
+            return {"subject": str(data["subject"]), "body": str(data["body"])}
+    except Exception:
+        pass
+
+    return fallback
+
 def analyze_spending_anomalies(db: Session, user: models.User, gemini_key: str) -> Optional[str]:
     """
     Detect unusual spending patterns using AI

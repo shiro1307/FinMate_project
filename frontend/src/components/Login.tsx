@@ -2,6 +2,7 @@ import { useState, useContext } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { AuthContext } from '../AuthContext';
+import { API_URL } from '../apiConfig';
 import { motion } from 'framer-motion';
 import { Wallet, LogIn } from 'lucide-react';
 
@@ -23,14 +24,14 @@ export default function Login() {
       formData.append('username', email);
       formData.append('password', password);
 
-      const res = await axios.post('http://127.0.0.1:8000/login', formData, {
+      const res = await axios.post(`${API_URL}/login`, formData, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       });
       
       const token = res.data.access_token;
       
       // Fetch real user data from /me
-      const meRes = await axios.get('http://127.0.0.1:8000/me', {
+      const meRes = await axios.get(`${API_URL}/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
       auth?.login(token, meRes.data);

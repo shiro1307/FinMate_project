@@ -9,6 +9,9 @@ from slowapi.errors import RateLimitExceeded
 import os
 import logging
 from datetime import datetime
+import re
+import hashlib
+from typing import Optional, Iterable, Dict
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -102,28 +105,184 @@ def calculate_health_score(total_spent: float, monthly_income: float = None) -> 
     else:
         return {"score": 30, "label": "Critical", "color": "#ff4d6d"}
 
+def _merchant_category_dictionary() -> Dict[str, str]:
+    """
+    Lightweight "ML-style" merchant classifier.
+
+    Keys are normalized merchant tokens (see normalize_merchant_key),
+    values are canonical category slugs used across the app.
+
+    This gives us a deterministic, hackathon-friendly approximation of a
+    trained classifier without adding a model dependency.
+    """
+    return {
+        # Food & dining
+        "starbucks": "food",
+        "mcdonald s": "food",
+        "kfc": "food",
+        "dominos": "food",
+        "ubereats": "food",
+        "swiggy": "food",
+        "zomato": "food",
+        "doordash": "food",
+        "foodpanda": "food",
+        "pizza hut": "food",
+        # Groceries / supermarkets
+        "walmart": "food",
+        "costco": "food",
+        "tesco": "food",
+        "big bazaar": "food",
+        "dmart": "food",
+        "aldi": "food",
+        "lidl": "food",
+        "target": "shopping",
+        # Transport
+        "uber": "transportation",
+        "ola": "transportation",
+        "lyft": "transportation",
+        "bolt": "transportation",
+        "shell": "transportation",
+        "chevron": "transportation",
+        # Entertainment / subscriptions
+        "netflix": "entertainment",
+        "spotify": "entertainment",
+        "youtube premium": "entertainment",
+        "amazon prime": "entertainment",
+        "disney plus": "entertainment",
+        "playstation": "entertainment",
+        "xbox": "entertainment",
+        # Utilities / bills
+        "at t": "utilities",
+        "verizon": "utilities",
+        "comcast": "utilities",
+        "xfinity": "utilities",
+        "jio fiber": "utilities",
+        "airtel": "utilities",
+        # Healthcare / fitness
+        "pharmacy": "healthcare",
+        "walgreens": "healthcare",
+        "cvs": "healthcare",
+        "boots": "healthcare",
+        "planet fitness": "healthcare",
+        "cult fit": "healthcare",
+        "anytime fitness": "healthcare",
+        # Shopping / ecommerce
+        "amazon": "shopping",
+        "flipkart": "shopping",
+        "myntra": "shopping",
+        "ikea": "shopping",
+        "h m": "shopping",
+        "zara": "shopping",
+    }
+
+
 def suggest_category(description: str) -> str:
     """
-    Simple category suggestion based on keywords
-    Can be enhanced with ML later
+    Simple category suggestion that combines:
+    - A merchant dictionary (normalized via normalize_merchant_key)
+    - Keyword-based fallbacks
+
+    This behaves like a tiny ML classifier but stays fully deterministic.
     """
+    description = description or ""
     description_lower = description.lower()
-    
+
+    # 1) Merchant dictionary pass (treats description as merchant-ish string)
+    merchant_key = normalize_merchant_key(description)
+    merchant_map = _merchant_category_dictionary()
+    if merchant_key in merchant_map:
+        return merchant_map[merchant_key]
+
+    # 2) Keyword-based fallback
     keywords = {
-        "food": ["grocery", "restaurant", "cafe", "coffee", "pizza", "burger", "pizza", "food", "restaurant", "lunch", "dinner", "breakfast", "market", "store"],
-        "transportation": ["gas", "fuel", "parking", "uber", "lyft", "taxi", "bus", "train", "metro", "car", "vehicle", "tolls", "transit"],
-        "entertainment": ["movie", "cinema", "concert", "game", "spotify", "netflix", "gaming", "show", "entertainment", "ticket"],
-        "utilities": ["electricity", "water", "internet", "phone", "utility", "bill", "wifi"],
-        "healthcare": ["pharmacy", "doctor", "hospital", "medicine", "health", "dental", "gym", "medical"],
-        "shopping": ["amazon", "clothing", "clothes", "apparel", "mall", "store", "shop", "purchase"],
+        "food": ["grocery", "restaurant", "cafe", "coffee", "pizza", "burger", "food", "lunch", "dinner", "breakfast", "market", "supermarket"],
+        "transportation": ["gas", "fuel", "parking", "uber", "lyft", "taxi", "cab", "bus", "train", "metro", "car", "vehicle", "tolls", "transit"],
+        "entertainment": ["movie", "cinema", "concert", "game", "spotify", "netflix", "gaming", "show", "entertainment", "ticket", "theatre"],
+        "utilities": ["electricity", "water", "internet", "phone", "utility", "bill", "wifi", "broadband"],
+        "healthcare": ["pharmacy", "doctor", "hospital", "medicine", "health", "dental", "gym", "medical", "clinic"],
+        "shopping": ["clothing", "clothes", "apparel", "mall", "store", "shop", "purchase", "online order", "ecommerce"],
+        "housing": ["rent", "mortgage", "loan emi", "emi"],
         "other": []
     }
-    
+
     for category, words in keywords.items():
         if any(word in description_lower for word in words):
             return category
-    
+
     return "other"
+
+
+_MONEY_CLEAN_RE = re.compile(r"[^\d\-\(\)\.,]")
+
+
+def parse_money(value) -> Optional[float]:
+    """
+    Best-effort money parser for CSV/receipt ingestion.
+    Handles: ₹1,234.50, $1,234.50, (1,234.50), -1234.5, "1.234,50" (EU-ish).
+    Returns float or None if not parseable.
+    """
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s or s.lower() in {"nan", "none", "null"}:
+        return None
+
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1]
+
+    s = _MONEY_CLEAN_RE.sub("", s)
+    s = s.strip()
+    if not s:
+        return None
+
+    if s.count(",") > 0 and s.count(".") == 0:
+        s = s.replace(".", "").replace(",", ".")
+    else:
+        s = s.replace(",", "")
+
+    try:
+        amt = float(s)
+    except Exception:
+        return None
+
+    if negative or amt < 0:
+        amt = -abs(amt)
+    return amt
+
+
+def normalize_header(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def pick_first(mapping: dict, keys: Iterable[str]) -> Optional[str]:
+    for k in keys:
+        if k in mapping:
+            return mapping[k]
+    return None
+
+
+def normalize_merchant_key(description: str) -> str:
+    """
+    Best-effort normalization to group recurring merchants.
+    Intentionally simple and deterministic for hackathon reliability.
+    """
+    if not description:
+        return "unknown"
+    s = description.lower()
+    s = re.sub(r"(receipt:)\s*", "", s)
+    s = re.sub(r"\d+", "", s)
+    s = re.sub(r"[^a-z\s]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Keep first few tokens to avoid overfitting to long descriptors
+    tokens = s.split(" ")
+    return " ".join(tokens[:4]) if tokens else "unknown"
+
+
+def make_candidate_id(user_id: int, merchant_key: str) -> str:
+    raw = f"{user_id}:{merchant_key}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:16]
 
 def generate_spending_summary(transactions: list) -> dict:
     """Generate summary statistics from transactions"""

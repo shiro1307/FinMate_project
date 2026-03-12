@@ -34,6 +34,27 @@
     padding: 0;
   }
 
+  /* Remove all default focus outlines */
+  *:focus {
+    outline: none !important;
+  }
+
+  *:focus-visible {
+    outline: none !important;
+  }
+
+  /* Remove browser default focus ring */
+  button:focus,
+  a:focus,
+  input:focus,
+  select:focus,
+  textarea:focus,
+  div:focus,
+  [tabindex]:focus {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
   html {
     scroll-behavior: smooth;
   }
