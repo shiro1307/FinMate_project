@@ -1,0 +1,128 @@
+from pydantic import BaseModel, EmailStr, field_validator, Field
+from typing import Optional, List
+from datetime import datetime
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8)
+    full_name: str = Field(..., min_length=2, max_length=100)
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password(cls, v):
+        if not any(char.isupper() for char in v):
+            raise ValueError('Password must contain at least one uppercase letter')
+        if not any(char.isdigit() for char in v):
+            raise ValueError('Password must contain at least one digit')
+        return v
+
+class UserLogin(BaseModel):
+    email: EmailStr
+    password: str
+
+class UserOut(BaseModel):
+    user_id: int
+    email: EmailStr
+    full_name: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
+
+class TransactionCreate(BaseModel):
+    amount: float = Field(..., gt=0)
+    description: str = Field(..., min_length=1, max_length=200)
+    category: Optional[str] = "uncategorized"
+    date: Optional[datetime] = None
+    source: Optional[str] = "manual"
+
+class TransactionOut(BaseModel):
+    transaction_id: int
+    amount: float
+    category: str
+    description: str
+    date: datetime
+    source: str
+
+    class Config:
+        from_attributes = True
+
+class BudgetGoalCreate(BaseModel):
+    goal_type: str = Field(..., pattern="^(savings|debt_repayment|investment)$")
+    target_amount: float = Field(..., gt=0)
+    deadline: datetime
+
+class BudgetGoalUpdate(BaseModel):
+    goal_type: Optional[str] = None
+    target_amount: Optional[float] = None
+    current_progress: Optional[float] = None
+    deadline: Optional[datetime] = None
+    status: Optional[str] = None
+
+class BudgetGoalOut(BaseModel):
+    goal_id: int
+    goal_type: str
+    target_amount: float
+    current_progress: float
+    deadline: datetime
+    status: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=500)
+    roast_mode: bool = False
+    
+class ChatResponse(BaseModel):
+    response: str
+    action_type: Optional[str] = None
+    action_payload: Optional[dict] = None
+
+class UserStatsOut(BaseModel):
+    total_xp: int
+    current_streak: int
+    longest_streak: int
+    total_transactions: int
+    total_spending: float
+
+    class Config:
+        from_attributes = True
+
+class AchievementOut(BaseModel):
+    achievement_id: int
+    achievement_type: str
+    title: str
+    description: str
+    icon: str
+    xp_reward: int
+    unlocked_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class NotificationOut(BaseModel):
+    notification_id: int
+    title: str
+    message: str
+    notification_type: str
+    is_read: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class ReceiptConfirmRequest(BaseModel):
+    receipt_id: int
+    confirmed: bool
+    amount: Optional[float] = None
+    description: Optional[str] = None
+    category: Optional[str] = None

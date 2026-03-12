@@ -1,0 +1,2 @@
+200
+{"response":"Hello there! I'm FinMate, your AI financial advisor.\n\nIt looks like I don't have any recent spending information for you at the moment. How can I assist you today with your financial goals or questions?","action_type":"none","action_payload":null}
