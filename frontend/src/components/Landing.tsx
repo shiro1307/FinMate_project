@@ -81,10 +81,10 @@ export default function Landing() {
             FinMate combines AI conversation, receipt scanning, and intelligent dashboards to give you a complete picture of your financial health — and the advice to improve it.
           </p>
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Link to="/signup" className="btn-primary text-base px-8 py-3">
+            <Link to="/signup" className="btn-primary text-base px-8 py-3 h-12 flex items-center justify-center leading-none">
               Start for Free →
             </Link>
-            <Link to="/login" className="px-8 py-3 rounded-xl border border-white/10 text-sm hover:bg-white/5 transition-colors">
+            <Link to="/login" className="px-8 py-3 rounded-xl border border-white/10 text-base hover:bg-white/5 transition-colors h-12 flex items-center justify-center leading-none">
               Already have an account
             </Link>
           </div>
