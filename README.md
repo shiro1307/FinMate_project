@@ -12,10 +12,6 @@ FinMate is a full-stack web application that transforms how users manage their p
 
 - **AI-Powered Insights** - Powered by Google Gemini, the system detects unusual spending patterns, generates weekly spending digests via email, provides budget optimization recommendations, and analyzes 13-week spending trends with forecasts.
 
-- **Budget Goals & Tracking** - Create savings, debt repayment, or investment goals with specific targets and deadlines. Track real-time progress and get smart notifications when you're exceeding budgets.
-
-- **Gamification System** - Stay motivated through XP points, achievement badges, streak tracking (days under budget), and a leaderboard to compete with other users on savings rate.
-
 - **Smart Shopping Comparison** - Compare product prices across 7 Indian e-commerce platforms (Amazon, Flipkart, Blinkit, BigBasket, JioMart, Snapdeal, IndiaMART) with AI-powered debate analysis explaining the best value option. Includes pricing, trust scores, and delivery times.
 
 - **Financial Health Score** - A composite metric combining savings rate, budget adherence, transaction frequency, and goal progress. Track your financial wellness in real-time.
