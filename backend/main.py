@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Form
+from fastapi import FastAPI, Depends, HTTPException, status, UploadFile, File, Query, Form, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
@@ -19,6 +19,9 @@ from email_service import email_service
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 from collections import defaultdict
+from debate_cache import TTLCache
+from providers.web_search import default_offer_providers
+import debate
 
 def _month_window(month_offset: int = 0):
     """
@@ -83,6 +86,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Debate Mode caches (in-memory, demo-friendly)
+_offers_cache = TTLCache(ttl_s=20 * 60, max_items=256)
 
 # Custom error handlers
 @app.exception_handler(utils.ValidationError)
@@ -1463,6 +1469,92 @@ def get_savings_leaderboard(
     
     return {"leaderboard": leaderboard}
 
+
+# --- DEBATE MODE ---
+
+@app.post("/debate/offers", response_model=schemas.OfferAggregateOut)
+@limiter.limit("30/minute")
+async def debate_offers(
+    request: Request,
+    req: schemas.OfferQueryIn,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    """
+    Search product offers across multiple providers with partial-failure handling.
+    Provider implementations are best-effort (demo-friendly).
+    """
+    cache_key = f"{current_user.user_id}:{req.priority}:{req.max_results}:{(req.location or '').strip().lower()}:{req.query.strip().lower()}"
+    cached = _offers_cache.get(cache_key)
+    if cached:
+        return cached
+
+    providers = default_offer_providers()
+    offers: list[schemas.OfferOut] = []
+    errors_by_provider: dict[str, str] = {}
+
+    import asyncio
+
+    async def _run(p):
+        try:
+            return await p.search(
+                query=req.query,
+                max_results=req.max_results,
+                location=req.location,
+                timeout_s=4.0,
+            )
+        except Exception as e:
+            # Should not happen if adapter follows contract, but keep API resilient.
+            return {"provider": getattr(p, "name", "web"), "offers": [], "error": f"provider_failed:{type(e).__name__}"}
+
+    results = await asyncio.gather(*[_run(p) for p in providers], return_exceptions=False)
+    for r in results:
+        provider = r.provider if hasattr(r, "provider") else r.get("provider")
+        err = r.error if hasattr(r, "error") else r.get("error")
+        prov_offers = r.offers if hasattr(r, "offers") else r.get("offers", [])
+        if err:
+            errors_by_provider[str(provider)] = str(err)
+        for o in prov_offers or []:
+            offers.append(o)
+
+    recommended = debate.pick_recommended_offer(offers, req.priority)
+    out = schemas.OfferAggregateOut(
+        query=req.query,
+        priority=req.priority,
+        offers=offers,
+        errors_by_provider=errors_by_provider,
+        recommended_offer=recommended,
+    )
+    _offers_cache.set(cache_key, out)
+    return out
+
+
+@app.post("/debate/run", response_model=schemas.DebateOut)
+@limiter.limit("30/minute")
+async def debate_run(
+    request: Request,
+    req: schemas.DebateRunIn,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(auth.get_current_user),
+):
+    offers_bundle = await debate_offers(
+        request,
+        schemas.OfferQueryIn(query=req.query, max_results=req.max_results, priority=req.priority, location=req.location),
+        db=db,
+        current_user=current_user,
+    )
+
+    # Lightweight user context (kept short so it stays stable in demos).
+    income = current_user.profile.monthly_income if current_user.profile else None
+    user_context = f"monthly_income={income}" if income else "monthly_income=unknown"
+
+    return debate.run_debate(
+        gemini_api_key=GEMINI_API_KEY,
+        query=req.query,
+        priority=req.priority,
+        offers=offers_bundle.offers,
+        user_context=user_context,
+    )
 
 # --- ANALYTICS ENHANCEMENTS ---
 

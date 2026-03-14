@@ -2,6 +2,8 @@ from pydantic import BaseModel, EmailStr, field_validator, Field
 from typing import Optional, List, Literal
 from datetime import datetime
 
+CurrencyCode = Literal["USD", "INR", "EUR", "GBP"]
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=8)
@@ -180,3 +182,59 @@ class SubscriptionSuspectOut(BaseModel):
 
 class SubscriptionSuspectDecisionRequest(BaseModel):
     decision: Literal["keep", "removed"]
+
+
+# --- DEBATE / OFFER COMPARISON ---
+
+DebatePriority = Literal["cheapest", "fastest", "best_overall"]
+OfferProvider = Literal["amazon", "flipkart", "blinkit", "bigbasket", "zepto"]
+
+
+class OfferQueryIn(BaseModel):
+    query: str = Field(..., min_length=1, max_length=200)
+    max_results: int = Field(8, ge=1, le=25)
+    priority: DebatePriority = "best_overall"
+    location: Optional[str] = Field(None, max_length=80)
+
+
+class OfferOut(BaseModel):
+    provider: OfferProvider
+    title: str
+    price: Optional[float] = None
+    currency: CurrencyCode = "INR"
+    unit: Optional[str] = None
+    delivery_eta_minutes: Optional[int] = Field(None, ge=0, le=7 * 24 * 60)
+    rating: Optional[float] = Field(None, ge=0, le=5)
+    url: str
+    in_stock: Optional[bool] = None
+    image_url: Optional[str] = None
+
+
+class OfferAggregateOut(BaseModel):
+    query: str
+    priority: DebatePriority
+    offers: List[OfferOut]
+    errors_by_provider: dict[str, str] = Field(default_factory=dict)
+    recommended_offer: Optional[OfferOut] = None
+
+
+class DebateRunIn(BaseModel):
+    query: str = Field(..., min_length=1, max_length=200)
+    max_results: int = Field(8, ge=1, le=25)
+    priority: DebatePriority = "best_overall"
+    location: Optional[str] = Field(None, max_length=80)
+
+
+class DebateRoleOut(BaseModel):
+    role: Literal["FrugalCoach", "ValueAnalyst", "ConvenienceAdvocate", "Referee"]
+    text: str
+
+
+class DebateOut(BaseModel):
+    query: str
+    priority: DebatePriority
+    offers: List[OfferOut]
+    chosen_offer: Optional[OfferOut] = None
+    confidence: float = Field(0.5, ge=0, le=1)
+    roles: List[DebateRoleOut]
+    final_recommendation: str

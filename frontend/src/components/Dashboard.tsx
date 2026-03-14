@@ -16,6 +16,7 @@ import TransactionsList from './TransactionsList';
 import SubscriptionsSuspectsPanel from './SubscriptionsSuspectsPage';
 import PredictionPanel from './PredictionPage';
 import CoachPanel from './CoachPage';
+import DebatePurchaseV2 from './DebatePurchaseV2';
 
 export default function Dashboard() {
   const auth = useContext(AuthContext);
@@ -68,6 +69,7 @@ export default function Dashboard() {
     { id: 'transactions', label: 'Transactions', icon: List },
     { id: 'subscriptions', label: 'Subscriptions', icon: Repeat },
     { id: 'prediction', label: 'Prediction', icon: DollarSign },
+    { id: 'debate', label: 'Debate', icon: TrendingUp },
     { id: 'coach', label: 'Coach', icon: MessageCircle }
   ];
 
@@ -367,6 +369,18 @@ export default function Dashboard() {
               className="space-y-6"
             >
               <PredictionPanel />
+            </motion.div>
+          )}
+
+          {activeSection === 'debate' && (
+            <motion.div
+              key="debate"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-6"
+            >
+              <DebatePurchaseV2 />
             </motion.div>
           )}
 
