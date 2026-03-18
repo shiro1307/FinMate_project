@@ -18,10 +18,10 @@ class User(Base):
     profile = relationship("FinancialProfile", back_populates="user", uselist=False)
     transactions = relationship("Transaction", back_populates="user")
     goals = relationship("BudgetGoal", back_populates="user")
-    stats = relationship("UserStats", foreign_keys="UserStats.user_id", uselist=False)
-    achievements = relationship("Achievement", foreign_keys="Achievement.user_id")
-    notifications = relationship("Notification", foreign_keys="Notification.user_id")
-    subscription_decisions = relationship("SubscriptionDecision", foreign_keys="SubscriptionDecision.user_id")
+    stats = relationship("UserStats", back_populates="user", uselist=False)
+    achievements = relationship("Achievement", back_populates="user")
+    notifications = relationship("Notification", back_populates="user")
+    subscription_decisions = relationship("SubscriptionDecision", back_populates="user")
 
 class FinancialProfile(Base):
     __tablename__ = "financial_profiles"
@@ -75,7 +75,7 @@ class UserStats(Base):
     last_streak_date = Column(DateTime)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
-    user = relationship("User", foreign_keys=[user_id])
+    user = relationship("User", back_populates="stats")
 
 class Achievement(Base):
     __tablename__ = "achievements"
@@ -89,7 +89,7 @@ class Achievement(Base):
     xp_reward = Column(Integer, default=0)
     unlocked_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    user = relationship("User", foreign_keys=[user_id])
+    user = relationship("User", back_populates="achievements")
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -102,7 +102,7 @@ class Notification(Base):
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    user = relationship("User", foreign_keys=[user_id])
+    user = relationship("User", back_populates="notifications")
 
 class ReceiptPending(Base):
     __tablename__ = "receipts_pending"
@@ -137,4 +137,4 @@ class SubscriptionDecision(Base):
     action = Column(String)  # keep/cancel/negotiate
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-    user = relationship("User", foreign_keys=[user_id])
+    user = relationship("User", back_populates="subscription_decisions")
