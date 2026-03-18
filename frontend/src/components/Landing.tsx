@@ -1,9 +1,8 @@
-import React from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { 
   Wallet, Zap, PieChart, ShieldCheck, 
-  Mic, Brain, ArrowRight, Sparkles, MessageSquare 
+  Mic, Brain, ArrowRight, Sparkles
 } from 'lucide-react';
 
 const features = [
